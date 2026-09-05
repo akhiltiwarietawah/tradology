@@ -7,11 +7,11 @@ Wants=crypto-trading.service
 Type=simple
 User=ubuntu
 Group=ubuntu
-WorkingDirectory=/opt/crypto/frontend
+WorkingDirectory=/home/ubuntu/crypto/frontend
 Environment=NODE_ENV=production
 Environment=PORT=3000
 Environment=NEXT_PUBLIC_API_URL=http://localhost:8000
-ExecStart=/usr/local/bin/bun run start -p 3000
+ExecStart=/home/ubuntu/.bun/bin/bun run start -p 3000
 Restart=always
 RestartSec=5s
 KillSignal=SIGTERM
