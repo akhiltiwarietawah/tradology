@@ -1,0 +1,24 @@
+[Unit]
+Description=Tradology BTC Options Operations Dashboard (Next.js 14)
+After=network.target crypto-trading.service
+Wants=crypto-trading.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/crypto/frontend
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=NEXT_PUBLIC_API_URL=http://localhost:8000
+ExecStart=/usr/local/bin/bun run start -p 3000
+Restart=always
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=crypto-dashboard
+
+[Install]
+WantedBy=multi-user.target

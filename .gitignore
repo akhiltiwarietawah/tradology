@@ -1,0 +1,50 @@
+# Python environment & cache
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs and runtime data
+*.log
+logs/
+data/
+backups/
+scratch/
+*.sql
+*.sql.gz
+DEPLOYMENT.md
+
+# Secrets & Environment configs
+.env
+.env.*
+!.env.example
+!.env.production.example
+*.env.local
+frontend/.env.local
+frontend/.env*.local
+!.frontend/.env.local.example
+*.pem
+*.key
+
+# IDEs & System files
+.DS_Store
+.vscode/
+.idea/
+*.deb
+
+# Local editor & workspace cache
+.*_cache/
+.local/
+.cache/
+
+# Frontend build & dependencies
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/*.tsbuildinfo

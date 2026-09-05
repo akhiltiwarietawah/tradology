@@ -1,0 +1,23 @@
+[Unit]
+Description=Tradology BTC Options Trading Engine (FastAPI + Strategy Core)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/crypto
+EnvironmentFile=/opt/crypto/.env
+ExecStart=/opt/crypto/.venv/bin/python main.py --api
+Restart=always
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=25s
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=crypto-trading
+
+[Install]
+WantedBy=multi-user.target
