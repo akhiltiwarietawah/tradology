@@ -107,9 +107,52 @@ async def test_reconcile_handles_manual_close_of_strategy_leg(mock_exchange):
 
 
 @pytest.mark.asyncio
-async def test_reconcile_unresolvable_discrepancy_triggers_safe_halt(mock_exchange):
+async def test_reconcile_handles_partial_size_change_without_halt(mock_exchange):
     """
-    If an unexpected size discrepancy occurs on a strategy leg, reconciler signals SAFE_HALT.
+    CRITICAL TEST: If a leg quantity changes partially (e.g. 500 contracts reduced to 50 due to partial fill/close),
+    the reconciler updates leg quantity smoothly and does NOT crash or trigger SAFE_HALT.
+    """
+    reconciler = StateReconciler(exchange_adapter=mock_exchange)
+
+    ce_leg = StrategyLeg(
+        leg_id="CE_1",
+        option_type=OptionType.CALL,
+        instrument_id="101",
+        symbol="C-BTC-98000-010926",
+        strike=98000.0,
+        expiry_date="010926",
+        quantity=500.0,
+        status=LegStatus.OPEN,
+        intended_premium=100.0,
+        entry_fill_price=100.0,
+        sl_price=200.0,
+        exchange_sl_active=True,
+    )
+
+    trade = StrategyTrade(
+        strategy_trade_id="STRANGLE_20260901_090000",
+        strategy_name="btc_short_strangle",
+        trade_date="2026-09-01",
+        ce_leg=ce_leg,
+        state=StrategyState.ACTIVE,
+    )
+
+    # Position on exchange reduced to -50.0 (partial close/fill)
+    mock_exchange.positions = [
+        Position(instrument_id="101", symbol="C-BTC-98000-010926", size=-50.0, entry_price=100.0),
+    ]
+
+    res = await reconciler.reconcile(trade)
+    assert res.is_synchronized is True
+    assert trade.state == StrategyState.ACTIVE
+    assert trade.ce_leg.quantity == 50.0
+    assert "C-BTC-98000-010926" in res.details["updated_legs"]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_unexpected_long_position_triggers_safe_halt(mock_exchange):
+    """
+    If an unexpected LONG direction position occurs on a short strategy symbol, reconciler signals SAFE_HALT.
     """
     reconciler = StateReconciler(exchange_adapter=mock_exchange)
 
@@ -133,9 +176,9 @@ async def test_reconcile_unresolvable_discrepancy_triggers_safe_halt(mock_exchan
         state=StrategyState.ACTIVE,
     )
 
-    # Unexpected size on exchange: -5.0 instead of -1.0
+    # Unexpected LONG position (+1.0) on exchange for a short strangle leg
     mock_exchange.positions = [
-        Position(instrument_id="101", symbol="C-BTC-98000-010926", size=-5.0, entry_price=100.0),
+        Position(instrument_id="101", symbol="C-BTC-98000-010926", size=1.0, entry_price=100.0),
     ]
 
     res = await reconciler.reconcile(trade)

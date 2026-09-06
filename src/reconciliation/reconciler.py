@@ -2,6 +2,7 @@
 
 import logging
 from typing import Optional, List, Dict, Tuple, Any
+from datetime import datetime, timezone
 from src.core.interfaces.exchange import BaseExchangeAdapter
 from src.core.models.trade import StrategyTrade, StrategyLeg, StrategyState, LegStatus
 from src.core.models.position import Position
@@ -165,9 +166,20 @@ class StateReconciler:
                     entry_ts = leg.entry_timestamp  # ISO string or None
                     for fill in fills:
                         fill_ts = fill.get("created_at") or fill.get("timestamp") or ""
-                        # Skip fills that predate our entry (very conservative safety check)
-                        if entry_ts and fill_ts and fill_ts < entry_ts:
-                            continue
+                        # Skip fills that predate our entry (safely handling UTC and IST timezone offsets)
+                        if entry_ts and fill_ts:
+                            try:
+                                dt_entry = datetime.fromisoformat(str(entry_ts).replace("Z", "+00:00"))
+                                dt_fill = datetime.fromisoformat(str(fill_ts).replace("Z", "+00:00"))
+                                if dt_fill.tzinfo is None:
+                                    dt_fill = dt_fill.replace(tzinfo=timezone.utc)
+                                if dt_entry.tzinfo is None:
+                                    dt_entry = dt_entry.replace(tzinfo=timezone.utc)
+                                if dt_fill < dt_entry:
+                                    continue
+                            except Exception:
+                                if fill_ts < entry_ts:
+                                    continue
                         raw_price = fill.get("fill_price") or fill.get("price")
                         if raw_price:
                             actual_exit_price = float(raw_price)
@@ -222,12 +234,31 @@ class StateReconciler:
                 )
                 return
 
-            # Check quantity match
-            if abs(abs(pos.size) - leg.quantity) > 1e-4:
+            # Check position direction (strategy requires SHORT options, pos.size < 0)
+            if pos.size > 0:
                 discrepancies.append(
-                    f"{leg_name} size mismatch on {leg.symbol}: expected {leg.quantity}, actual {pos.size}"
+                    f"{leg_name} unexpected LONG position on {leg.symbol}: actual size is {pos.size}"
                 )
                 return
+
+            # Check quantity match / handle partial fills and reductions gracefully
+            actual_qty = abs(pos.size)
+            if abs(actual_qty - leg.quantity) > 1e-4:
+                old_qty = leg.quantity
+                leg.quantity = actual_qty
+                self.logger.warning(
+                    f"Reconciliation: Partial size change detected on {leg_name} leg {leg.symbol}: "
+                    f"tracked quantity was {old_qty}, updated to exchange quantity {actual_qty}. Continuing safely."
+                )
+                updated_legs.append(leg.symbol)
+                self.trade_logger.log_reconciliation_event(
+                    f"{leg_name}_LEG_PARTIAL_SIZE_UPDATE",
+                    {
+                        "symbol": leg.symbol,
+                        "old_quantity": old_qty,
+                        "new_quantity": actual_qty,
+                    },
+                )
 
             # Check native exchange bracket SL order
             existing_bracket = bracket_orders_by_inst.get(str(leg.instrument_id)) or bracket_orders_by_inst.get(str(leg.symbol))
