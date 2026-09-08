@@ -2,7 +2,7 @@
 
 import logging
 from typing import Optional, List, Dict, Tuple, Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from src.core.interfaces.exchange import BaseExchangeAdapter
 from src.core.models.trade import StrategyTrade, StrategyLeg, StrategyState, LegStatus
 from src.core.models.position import Position
@@ -20,6 +20,9 @@ class ReconciliationResult:
 class StateReconciler:
     """Reconciles local strategy state against exchange source of truth while isolating manual trades."""
 
+    # Local entry_timestamp can be a few hundred ms after Delta's fill created_at.
+    _FILL_LOOKBACK = timedelta(seconds=30)
+
     def __init__(
         self,
         exchange_adapter: BaseExchangeAdapter,
@@ -31,6 +34,110 @@ class StateReconciler:
         self.logger = logger or logging.getLogger("state_reconciler")
         self._reconcile_count: int = 0
         self._last_logged_summary: Optional[str] = None
+
+    @staticmethod
+    def _parse_iso_dt(raw: Optional[str]) -> Optional[datetime]:
+        if not raw:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except Exception:
+            return None
+
+    @staticmethod
+    def _fill_price(fill: Dict[str, Any]) -> Optional[float]:
+        raw = fill.get("price")
+        if raw in (None, "", 0, "0"):
+            raw = fill.get("fill_price")
+        try:
+            px = float(raw or 0)
+            return px if px > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _fill_size(fill: Dict[str, Any]) -> float:
+        try:
+            return abs(float(fill.get("size") or fill.get("quantity") or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _fill_commission(fill: Dict[str, Any]) -> float:
+        commission = fill.get("commission") or fill.get("fees") or 0.0
+        try:
+            return abs(float(commission))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _fills_after_entry(self, fills: List[Dict[str, Any]], entry_ts: Optional[str]) -> List[Dict[str, Any]]:
+        entry_dt = self._parse_iso_dt(entry_ts)
+        cutoff = (entry_dt - self._FILL_LOOKBACK) if entry_dt else None
+        out = []
+        for fill in fills:
+            fill_ts = fill.get("created_at") or fill.get("timestamp") or ""
+            fill_dt = self._parse_iso_dt(str(fill_ts) if fill_ts else None)
+            if cutoff and fill_dt and fill_dt < cutoff:
+                continue
+            if cutoff and fill_ts and fill_dt is None:
+                try:
+                    if str(fill_ts) < str(entry_ts):
+                        continue
+                except Exception:
+                    pass
+            out.append(fill)
+        return out
+
+    async def capture_leg_exit_fill(self, leg: StrategyLeg) -> Tuple[Optional[float], float, Optional[str]]:
+        """
+        Fetch actual post-entry BUY fills for this product from Delta.
+        Returns (vwap_exit_price, total_fees_entry_plus_exit, latest_exit_timestamp).
+        """
+        start_time_us = None
+        entry_dt = self._parse_iso_dt(leg.entry_timestamp)
+        if entry_dt:
+            start_time_us = int((entry_dt - self._FILL_LOOKBACK).timestamp() * 1_000_000)
+
+        fills = await self.exchange.get_recent_fills_for_product(
+            instrument_id=str(leg.instrument_id),
+            side=None,
+            page_size=50,
+            start_time_us=start_time_us,
+        )
+        fills = self._fills_after_entry(fills, leg.entry_timestamp)
+        buy_fills = [f for f in fills if str(f.get("side", "")).lower() == "buy"]
+        sell_fills = [f for f in fills if str(f.get("side", "")).lower() == "sell"]
+
+        if not buy_fills:
+            return None, 0.0, None
+
+        qty_sum = 0.0
+        notional = 0.0
+        exit_fees = 0.0
+        latest_ts: Optional[str] = None
+        latest_dt: Optional[datetime] = None
+        for fill in buy_fills:
+            px = self._fill_price(fill)
+            sz = self._fill_size(fill)
+            if not px or sz <= 0:
+                continue
+            qty_sum += sz
+            notional += px * sz
+            exit_fees += self._fill_commission(fill)
+            ts = fill.get("created_at") or fill.get("timestamp")
+            dt = self._parse_iso_dt(str(ts) if ts else None)
+            if dt and (latest_dt is None or dt > latest_dt):
+                latest_dt = dt
+                latest_ts = str(ts)
+
+        if qty_sum <= 0:
+            return None, 0.0, None
+
+        entry_fees = sum(self._fill_commission(f) for f in sell_fills)
+        return round(notional / qty_sum, 8), round(entry_fees + exit_fees, 8), latest_ts
 
     async def reconcile(self, trade: Optional[StrategyTrade]) -> ReconciliationResult:
         """
@@ -156,39 +263,7 @@ class StateReconciler:
                 exit_timestamp_str: Optional[str] = None
 
                 try:
-                    fills = await self.exchange.get_recent_fills_for_product(
-                        instrument_id=str(leg.instrument_id),
-                        side="buy",   # Closing a short = BUY back
-                        page_size=10,
-                    )
-                    # Find the most recent BUY fill AFTER our entry timestamp to avoid
-                    # matching stale fills from a previous position on the same instrument.
-                    entry_ts = leg.entry_timestamp  # ISO string or None
-                    for fill in fills:
-                        fill_ts = fill.get("created_at") or fill.get("timestamp") or ""
-                        # Skip fills that predate our entry (safely handling UTC and IST timezone offsets)
-                        if entry_ts and fill_ts:
-                            try:
-                                dt_entry = datetime.fromisoformat(str(entry_ts).replace("Z", "+00:00"))
-                                dt_fill = datetime.fromisoformat(str(fill_ts).replace("Z", "+00:00"))
-                                if dt_fill.tzinfo is None:
-                                    dt_fill = dt_fill.replace(tzinfo=timezone.utc)
-                                if dt_entry.tzinfo is None:
-                                    dt_entry = dt_entry.replace(tzinfo=timezone.utc)
-                                if dt_fill < dt_entry:
-                                    continue
-                            except Exception:
-                                if fill_ts < entry_ts:
-                                    continue
-                        raw_price = fill.get("fill_price") or fill.get("price")
-                        if raw_price:
-                            actual_exit_price = float(raw_price)
-                            # Delta fill fees: "commission" field, positive = fee paid
-                            commission = fill.get("commission") or fill.get("fees") or 0.0
-                            actual_fees = abs(float(commission)) if commission else 0.0
-                            exit_timestamp_str = fill_ts or None
-                            break  # Newest fill first
-
+                    actual_exit_price, actual_fees, exit_timestamp_str = await self.capture_leg_exit_fill(leg)
                     if actual_exit_price:
                         self.logger.info(
                             f"Reconciliation: Captured actual exit fill for {leg.symbol}: "

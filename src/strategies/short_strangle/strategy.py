@@ -203,6 +203,7 @@ class BTCShortStrangleStrategy(BaseStrategy):
 
         if trade.ce_leg:
             trade.ce_leg.entry_fill_price = ce_fill_price
+            trade.ce_leg.current_price = ce_fill_price
             trade.ce_leg.entry_order_id = ce_order_id
             trade.ce_leg.entry_client_order_id = ce_client_order_id
             trade.ce_leg.entry_timestamp = dt
@@ -214,6 +215,7 @@ class BTCShortStrangleStrategy(BaseStrategy):
 
         if trade.pe_leg:
             trade.pe_leg.entry_fill_price = pe_fill_price
+            trade.pe_leg.current_price = pe_fill_price
             trade.pe_leg.entry_order_id = pe_order_id
             trade.pe_leg.entry_client_order_id = pe_client_order_id
             trade.pe_leg.entry_timestamp = dt
@@ -223,6 +225,7 @@ class BTCShortStrangleStrategy(BaseStrategy):
                 f"PE Leg Active: {trade.pe_leg.symbol} @ ${pe_fill_price:.2f} | 100% SL trigger at ${trade.pe_leg.sl_price:.2f}"
             )
 
+        trade.update_pnl()
         trade.state = StrategyState.ACTIVE
         trade.updated_at = dt
 
@@ -232,7 +235,7 @@ class BTCShortStrangleStrategy(BaseStrategy):
             return
 
         trade = self._current_trade
-        current_price = ticker.last_price or ticker.mark_price or ticker.mid_price
+        current_price = ticker.mark_price or ticker.last_price or ticker.mid_price
         if current_price <= 0:
             return
 
@@ -314,8 +317,11 @@ class BTCShortStrangleStrategy(BaseStrategy):
                 now_ts = asyncio.get_event_loop().time()
                 if is_ws_stale or (now_ts - self._last_tick_time > 5.0):
                     try:
-                        syms = [leg.symbol for leg in open_legs]
-                        tickers = await self.exchange.get_tickers(symbols_or_ids=syms)
+                        lookup_keys = []
+                        for leg in open_legs:
+                            lookup_keys.append(leg.instrument_id)
+                            lookup_keys.append(leg.symbol)
+                        tickers = await self.exchange.get_tickers(symbols_or_ids=lookup_keys)
                         for leg in open_legs:
                             t = tickers.get(leg.symbol) or tickers.get(leg.instrument_id)
                             if t:

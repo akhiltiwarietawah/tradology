@@ -80,6 +80,7 @@ class BaseExchangeAdapter(ABC):
         instrument_id: str,
         side: Optional[str] = None,
         page_size: int = 10,
+        start_time_us: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Fetch recent fills for a specific instrument, filtered by instrument_id only.

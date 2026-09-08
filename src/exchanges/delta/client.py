@@ -262,35 +262,30 @@ class DeltaRestClient:
         product_id: int,
         side: Optional[str] = None,
         page_size: int = 10,
+        start_time_us: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Fetch recent fills (executions) for a specific product from /v2/fills.
 
-        Filters strictly by product_id so unrelated manual trades on other instruments
-        do NOT appear. Used by reconciliation to capture actual exit fill prices and fees
-        when a strategy leg was closed externally (e.g. manually via Delta UI or by expiry).
-
-        Args:
-            product_id: Delta product/instrument ID to filter fills.
-            side: Optional "buy" or "sell" filter (close of a short = "buy").
-            page_size: Max fills to fetch (default 10, we typically only need the latest 1-2).
-
-        Returns:
-            List of raw fill dicts sorted newest-first, or [] on any error.
+        Delta India accepts `product_ids` (plural), not `product_id`, and has no `side`
+        query param. Side is filtered client-side so the request is not dropped/empty.
         """
         params: Dict[str, Any] = {
-            "product_id": str(product_id),
-            "page_size": str(page_size),
+            "product_ids": str(product_id),
+            "page_size": str(min(int(page_size), 50)),
         }
-        if side:
-            params["side"] = side.lower()
+        if start_time_us:
+            params["start_time"] = str(int(start_time_us))
         try:
             res = await self.request("GET", PATH_FILLS, params=params, auth_required=True)
             result = res.get("result", [])
             if isinstance(result, dict):
-                # Delta sometimes wraps in {"data": [...]}
                 result = result.get("data", [])
-            return result if isinstance(result, list) else []
+            fills = result if isinstance(result, list) else []
+            if side:
+                want = side.lower()
+                fills = [f for f in fills if str(f.get("side", "")).lower() == want]
+            return fills
         except Exception as e:
             self.logger.warning(f"Failed to fetch fills for product_id={product_id}: {e}")
             return []
@@ -467,7 +462,7 @@ class DeltaRestClient:
         """Fetch recent fills."""
         params = {}
         if product_id is not None:
-            params["product_id"] = str(product_id)
+            params["product_ids"] = str(product_id)
         res = await self.request("GET", PATH_FILLS, params=params, auth_required=True)
         return res.get("result", []) if isinstance(res, dict) else []
 

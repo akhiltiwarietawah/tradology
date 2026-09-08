@@ -271,6 +271,29 @@ class TradingEngine:
         t = trade if trade is not None else self.strategy.current_trade
         self.state_persistence.save_state(t, history=self.state_store._historical_trades)
 
+    def _mark_price_from_ticker(self, ticker: Ticker) -> float:
+        return ticker.mark_price or ticker.last_price or ticker.mid_price or 0.0
+
+    def _refresh_unrealized_from_mark_cache(self, trade: StrategyTrade) -> None:
+        """Apply last WS marks onto open legs so /status snapshots have live unrealized PnL."""
+        getter = getattr(self.delta_adapter, "get_latest_ticker", None)
+        ce_px = None
+        pe_px = None
+        if callable(getter):
+            if trade.ce_leg and trade.ce_leg.is_open:
+                cached = getter(trade.ce_leg.symbol) or getter(trade.ce_leg.instrument_id)
+                if cached is not None:
+                    ce_px = self._mark_price_from_ticker(cached)
+                    if ce_px <= 0:
+                        ce_px = None
+            if trade.pe_leg and trade.pe_leg.is_open:
+                cached = getter(trade.pe_leg.symbol) or getter(trade.pe_leg.instrument_id)
+                if cached is not None:
+                    pe_px = self._mark_price_from_ticker(cached)
+                    if pe_px <= 0:
+                        pe_px = None
+        trade.update_pnl(ce_price=ce_px, pe_price=pe_px)
+
     async def stop(self):
         """Gracefully stop engine and flush state."""
         self._running = False
@@ -480,7 +503,10 @@ class TradingEngine:
                 return
 
             # Subscribe to real-time ticker stream for secondary monitoring
-            await self.delta_adapter.subscribe_market_data([ce_inst.symbol, pe_inst.symbol], self.strategy.on_tick)
+            await self.delta_adapter.subscribe_market_data(
+                [ce_inst.symbol, pe_inst.symbol],
+                self._on_market_tick_wrapper,
+            )
 
             # Log fills to trade audit journal
             if trade.ce_leg:
@@ -540,7 +566,14 @@ class TradingEngine:
         )
 
         order = await self.execution_engine.execute_leg_exit(leg, reason="STOP_LOSS")
-        fill_px = (order.average_fill_price if order else None) or current_price
+        fill_px = order.average_fill_price if (order and order.average_fill_price) else None
+        fill_fees = 0.0
+        if fill_px is None:
+            # Native bracket already closed the short — do not use mark/trigger price.
+            actual_px, fill_fees, _ = await self.reconciler.capture_leg_exit_fill(leg)
+            fill_px = actual_px or current_price
+        if fill_fees:
+            leg.fees = fill_fees
 
         self.strategy.on_leg_closed(
             leg=leg,
@@ -714,8 +747,13 @@ class TradingEngine:
         trade = self.strategy.current_trade
         trade_data = None
         if trade:
+            self._refresh_unrealized_from_mark_cache(trade)
             ce_bracket = trade.ce_leg.bracket_order_id if trade.ce_leg else None
             pe_bracket = trade.pe_leg.bracket_order_id if trade.pe_leg else None
+            ce_unrealized = round(trade.ce_leg.compute_unrealized_pnl(), 4) if (trade.ce_leg and trade.ce_leg.is_open) else 0.0
+            pe_unrealized = round(trade.pe_leg.compute_unrealized_pnl(), 4) if (trade.pe_leg and trade.pe_leg.is_open) else 0.0
+            total_unrealized = round(ce_unrealized + pe_unrealized, 4)
+            trade.total_unrealized_pnl = total_unrealized
             trade_data = {
                 "trade_id": trade.strategy_trade_id,
                 "strategy_name": trade.strategy_name,
@@ -731,6 +769,10 @@ class TradingEngine:
                 "pe_quantity": trade.pe_leg.quantity if trade.pe_leg else None,
                 "ce_entry_price": trade.ce_leg.entry_fill_price if trade.ce_leg else None,
                 "pe_entry_price": trade.pe_leg.entry_fill_price if trade.pe_leg else None,
+                "ce_current_price": getattr(trade.ce_leg, "current_price", None) if trade.ce_leg else None,
+                "pe_current_price": getattr(trade.pe_leg, "current_price", None) if trade.pe_leg else None,
+                "ce_unrealized_pnl": ce_unrealized,
+                "pe_unrealized_pnl": pe_unrealized,
                 "ce_sl_price": trade.ce_leg.sl_price if trade.ce_leg else None,
                 "pe_sl_price": trade.pe_leg.sl_price if trade.pe_leg else None,
                 "ce_native_bracket_active": bool(ce_bracket),
@@ -738,7 +780,7 @@ class TradingEngine:
                 "ce_bracket_order_id": ce_bracket,
                 "pe_bracket_order_id": pe_bracket,
                 "total_realized_pnl": trade.total_realized_pnl,
-                "total_unrealized_pnl": trade.total_unrealized_pnl,
+                "total_unrealized_pnl": total_unrealized,
             }
 
 

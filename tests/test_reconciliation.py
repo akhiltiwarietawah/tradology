@@ -107,6 +107,60 @@ async def test_reconcile_handles_manual_close_of_strategy_leg(mock_exchange):
 
 
 @pytest.mark.asyncio
+async def test_reconcile_captures_delta_price_field_and_entry_plus_exit_fees(mock_exchange):
+    """Live Delta fills use `price` (not fill_price) and UTC timestamps vs IST entry."""
+    reconciler = StateReconciler(exchange_adapter=mock_exchange)
+
+    pe_leg = StrategyLeg(
+        leg_id="PE_1",
+        option_type=OptionType.PUT,
+        instrument_id="150988",
+        symbol="P-BTC-79800-060926",
+        strike=79800.0,
+        expiry_date="060926",
+        quantity=5.0,
+        intended_premium=89.0,
+        entry_fill_price=89.0,
+        entry_timestamp="2026-09-06T09:08:46.941105+05:30",
+        status=LegStatus.OPEN,
+    )
+    trade = StrategyTrade(
+        strategy_trade_id="STRANGLE_20260906_090842",
+        strategy_name="short_strangle",
+        trade_date="2026-09-06",
+        pe_leg=pe_leg,
+        state=StrategyState.ACTIVE,
+    )
+    mock_exchange.positions = []
+    mock_exchange.fills_by_instrument = {
+        "150988": [
+            {
+                "side": "sell",
+                "price": "89",
+                "size": "5",
+                "commission": "0.0183785",
+                "created_at": "2026-09-06T03:38:46.710152Z",
+            },
+            {
+                "side": "buy",
+                "price": "194",
+                "size": "5",
+                "commission": "0.040061",
+                "created_at": "2026-09-06T06:48:38.917195Z",
+            },
+        ]
+    }
+
+    res = await reconciler.reconcile(trade)
+    assert res.is_synchronized is True
+    assert trade.pe_leg.status == LegStatus.MANUALLY_CLOSED
+    assert trade.pe_leg.exit_price == 194.0
+    assert trade.pe_leg.realized_pnl == pytest.approx(-0.525, abs=1e-5)
+    assert trade.pe_leg.fees == pytest.approx(0.0584395, abs=1e-6)
+    assert trade.state == StrategyState.COMPLETED
+
+
+@pytest.mark.asyncio
 async def test_reconcile_handles_partial_size_change_without_halt(mock_exchange):
     """
     CRITICAL TEST: If a leg quantity changes partially (e.g. 500 contracts reduced to 50 due to partial fill/close),

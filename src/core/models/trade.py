@@ -49,6 +49,7 @@ class StrategyLeg:
     entry_order_id: Optional[str] = None
     entry_client_order_id: Optional[str] = None
     entry_fill_price: Optional[float] = None
+    current_price: Optional[float] = None
 
     # Stop Loss & Take Profit details
     sl_price: Optional[float] = None
@@ -80,11 +81,12 @@ class StrategyLeg:
             return self.sl_price
         return 0.0
 
-    def compute_unrealized_pnl(self, current_mark_price: float) -> float:
+    def compute_unrealized_pnl(self, current_mark_price: Optional[float] = None) -> float:
         """Compute unrealized P&L in USD for short position: (entry - current) * quantity * contract_value."""
-        if not self.is_open or self.entry_fill_price is None:
+        price = current_mark_price if current_mark_price is not None else self.current_price
+        if not self.is_open or self.entry_fill_price is None or price is None or price <= 0:
             return 0.0
-        return (self.entry_fill_price - current_mark_price) * self.quantity * self.contract_value
+        return round((self.entry_fill_price - price) * self.quantity * self.contract_value, 4)
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -111,6 +113,7 @@ class StrategyLeg:
             entry_order_id=str(data["entry_order_id"]) if data.get("entry_order_id") is not None else None,
             entry_client_order_id=data.get("entry_client_order_id"),
             entry_fill_price=float(data["entry_fill_price"]) if data.get("entry_fill_price") is not None else None,
+            current_price=float(data["current_price"]) if data.get("current_price") is not None else None,
             sl_price=float(data["sl_price"]) if data.get("sl_price") is not None else None,
             tp_price=float(data["tp_price"]) if data.get("tp_price") is not None else None,
             sl_triggered=bool(data.get("sl_triggered", False)),
@@ -198,13 +201,17 @@ class StrategyTrade:
 
         if self.ce_leg:
             realized += self.ce_leg.realized_pnl - self.ce_leg.fees
-            if self.ce_leg.is_open and ce_price is not None:
-                unrealized += self.ce_leg.compute_unrealized_pnl(ce_price)
+            if ce_price is not None:
+                self.ce_leg.current_price = ce_price
+            if self.ce_leg.is_open:
+                unrealized += self.ce_leg.compute_unrealized_pnl()
 
         if self.pe_leg:
             realized += self.pe_leg.realized_pnl - self.pe_leg.fees
-            if self.pe_leg.is_open and pe_price is not None:
-                unrealized += self.pe_leg.compute_unrealized_pnl(pe_price)
+            if pe_price is not None:
+                self.pe_leg.current_price = pe_price
+            if self.pe_leg.is_open:
+                unrealized += self.pe_leg.compute_unrealized_pnl()
 
         self.total_realized_pnl = round(realized, 4)
         self.total_unrealized_pnl = round(unrealized, 4)

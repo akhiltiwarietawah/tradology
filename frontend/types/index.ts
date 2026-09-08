@@ -50,12 +50,18 @@ export interface SystemStatus {
     pe_entry_price?: number;
     ce_current_price?: number;
     pe_current_price?: number;
+    ce_unrealized_pnl?: number;
+    pe_unrealized_pnl?: number;
+    ce_quantity?: number;
+    pe_quantity?: number;
     ce_sl_price?: number;
     pe_sl_price?: number;
     ce_native_bracket_active?: boolean;
     pe_native_bracket_active?: boolean;
     ce_bracket_order_id?: string;
     pe_bracket_order_id?: string;
+    total_realized_pnl?: number;
+    total_unrealized_pnl?: number;
   } | null;
   alerts: {
     recent_count: number;

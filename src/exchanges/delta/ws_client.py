@@ -46,6 +46,7 @@ class DeltaWsClient:
         self._last_msg_timestamp = time.time()
         self._subscribed_symbols: Set[str] = set()
         self._received_symbols: Set[str] = set()
+        self._latest_tickers: Dict[str, Dict[str, Any]] = {}
         self._total_tickers_received = 0
         self._first_msg_received = False
 
@@ -82,6 +83,20 @@ class DeltaWsClient:
 
     def add_ticker_callback(self, cb: Callable[[Dict[str, Any]], Awaitable[None]]):
         self._ticker_callbacks.append(cb)
+
+    def _cache_ticker(self, ticker_data: Dict[str, Any]) -> None:
+        """Keep last WS ticker keyed by symbol and product id for status/PnL snapshots."""
+        sym = ticker_data.get("symbol")
+        if sym:
+            self._latest_tickers[str(sym)] = ticker_data
+        product_id = ticker_data.get("product_id") or ticker_data.get("id")
+        if product_id is not None:
+            self._latest_tickers[str(product_id)] = ticker_data
+
+    def get_latest_ticker(self, symbol_or_id: str) -> Optional[Dict[str, Any]]:
+        if not symbol_or_id:
+            return None
+        return self._latest_tickers.get(str(symbol_or_id))
 
     def add_order_callback(self, cb: Callable[[Dict[str, Any]], Awaitable[None]]):
         self._order_callbacks.append(cb)
@@ -240,6 +255,7 @@ class DeltaWsClient:
                 if isinstance(ticker_data, dict):
                     sym = ticker_data.get("symbol", "UNKNOWN")
                     mark_px = ticker_data.get("mark_price", 0.0)
+                    self._cache_ticker(ticker_data)
                     self._total_tickers_received += 1
                     if sym not in self._received_symbols:
                         self._received_symbols.add(sym)

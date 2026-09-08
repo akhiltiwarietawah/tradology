@@ -117,6 +117,9 @@ async def test_delta_ws_message_handling():
     assert len(received_tickers) == 1
     assert received_tickers[0]["symbol"] == "C-BTC-95000-010926"
     assert received_tickers[0]["mark_price"] == "105.50"
+    cached = client.get_latest_ticker("C-BTC-95000-010926")
+    assert cached is not None
+    assert cached["mark_price"] == "105.50"
 
 
 def test_delta_ws_stale_detection():
@@ -373,5 +376,42 @@ async def test_delta_client_size_validation():
 
     with pytest.raises(ValueError, match="must be positive"):
         await client.place_order(product_id=100, size=-5, side="buy")
+
+
+@pytest.mark.asyncio
+async def test_get_recent_fills_for_product_uses_product_ids_not_side_query():
+    """Delta /v2/fills requires product_ids (plural) and has no side query param."""
+    client = DeltaRestClient(
+        base_url="https://api.india.delta.exchange",
+        api_key="test_key",
+        api_secret="test_secret",
+    )
+    captured = {}
+
+    async def fake_request(method, path, params=None, data=None, auth_required=True):
+        captured["method"] = method
+        captured["path"] = path
+        captured["params"] = params
+        return {
+            "result": [
+                {"side": "sell", "price": "89", "size": "5", "commission": "0.01"},
+                {"side": "buy", "price": "194", "size": "5", "commission": "0.04"},
+            ]
+        }
+
+    client.request = fake_request  # type: ignore
+    buys = await client.get_recent_fills_for_product(
+        product_id=150988,
+        side="buy",
+        page_size=50,
+        start_time_us=1757130000000000,
+    )
+    assert captured["path"] == "/v2/fills"
+    assert captured["params"]["product_ids"] == "150988"
+    assert "product_id" not in captured["params"]
+    assert "side" not in captured["params"]
+    assert captured["params"]["start_time"] == "1757130000000000"
+    assert len(buys) == 1
+    assert buys[0]["price"] == "194"
 
 

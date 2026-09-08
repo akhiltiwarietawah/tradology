@@ -55,6 +55,16 @@ class DeltaExchangeAdapter(BaseExchangeAdapter):
     def is_stale(self) -> bool:
         return self.ws_client.is_stale
 
+    def is_ws_stale(self) -> bool:
+        return self.ws_client.is_stale
+
+    def get_latest_ticker(self, symbol_or_id: str) -> Optional[Ticker]:
+        """Return last cached WS ticker for a symbol or product id, if any."""
+        raw = self.ws_client.get_latest_ticker(symbol_or_id)
+        if not raw:
+            return None
+        return DeltaMapper.to_ticker(raw)
+
     async def initialize(self) -> bool:
         """Initialize connections and test authentication."""
         self.logger.info(f"Initializing DeltaExchangeAdapter (Environment: {'TESTNET' if self.is_testnet else 'LIVE'})...")
@@ -146,6 +156,7 @@ class DeltaExchangeAdapter(BaseExchangeAdapter):
         instrument_id: str,
         side: Optional[str] = None,
         page_size: int = 10,
+        start_time_us: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Fetch recent fills for a specific product (strategy leg only, no manual bleed-over)."""
         product_id = int(instrument_id) if instrument_id and str(instrument_id).isdigit() else int(instrument_id)
@@ -153,6 +164,7 @@ class DeltaExchangeAdapter(BaseExchangeAdapter):
             product_id=product_id,
             side=side,
             page_size=page_size,
+            start_time_us=start_time_us,
         )
 
     async def place_order(self, order_request: OrderRequest) -> Order:

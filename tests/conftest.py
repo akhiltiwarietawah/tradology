@@ -22,6 +22,7 @@ class MockExchangeAdapter(BaseExchangeAdapter):
         self.spot_price = 95000.0
         self.instruments: List[Instrument] = []
         self.tickers_map: Dict[str, Ticker] = {}
+        self.latest_tickers: Dict[str, Ticker] = {}
         self.positions: List[Position] = []
         self.orders: Dict[str, Order] = {}
         self.placed_orders: List[OrderRequest] = []
@@ -64,6 +65,9 @@ class MockExchangeAdapter(BaseExchangeAdapter):
 
     async def get_tickers(self, symbols_or_ids: Optional[List[str]] = None) -> Dict[str, Ticker]:
         return self.tickers_map
+
+    def get_latest_ticker(self, symbol_or_id: str) -> Optional[Ticker]:
+        return self.latest_tickers.get(symbol_or_id)
 
     async def get_positions(self) -> List[Position]:
         if self.fail_specific_symbol == "FAIL_ALL":
@@ -191,6 +195,7 @@ class MockExchangeAdapter(BaseExchangeAdapter):
         instrument_id: str,
         side: Optional[str] = None,
         page_size: int = 10,
+        start_time_us: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Return test-configured fills keyed by instrument_id. Empty list by default."""
         fills_map: Dict[str, List[Dict]] = getattr(self, "fills_by_instrument", {})

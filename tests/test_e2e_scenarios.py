@@ -13,6 +13,7 @@ from src.core.models.trade import (
     LegStatus,
 )
 from src.core.models.instrument import OptionType
+from src.core.models.market_data import Ticker
 from src.core.models.position import Position
 from src.reconciliation.reconciler import ReconciliationResult
 from src.engine import TradingEngine
@@ -109,6 +110,7 @@ async def test_scenario_2_active_trade_simulation(e2e_engine):
             intended_premium=100.0,
             entry_timestamp=now_iso,
             entry_fill_price=105.0,
+            current_price=80.0,
             sl_price=210.0,
             bracket_order_id="BRK_150401_210",
             exchange_sl_active=True,
@@ -125,6 +127,7 @@ async def test_scenario_2_active_trade_simulation(e2e_engine):
             intended_premium=100.0,
             entry_timestamp=now_iso,
             entry_fill_price=95.0,
+            current_price=90.0,
             sl_price=190.0,
             bracket_order_id="BRK_150402_190",
             exchange_sl_active=True,
@@ -150,6 +153,8 @@ async def test_scenario_2_active_trade_simulation(e2e_engine):
         assert ct["ce_strike"] == 98000.0
         assert ct["ce_quantity"] == 1.0
         assert ct["ce_entry_price"] == 105.0
+        assert ct["ce_current_price"] == 80.0
+        assert ct["ce_unrealized_pnl"] == 0.025
         assert ct["ce_sl_price"] == 210.0
         assert ct["ce_native_bracket_active"] is True
         assert ct["ce_bracket_order_id"] == "BRK_150401_210"
@@ -159,9 +164,76 @@ async def test_scenario_2_active_trade_simulation(e2e_engine):
         assert ct["pe_strike"] == 92000.0
         assert ct["pe_quantity"] == 1.0
         assert ct["pe_entry_price"] == 95.0
+        assert ct["pe_current_price"] == 90.0
+        assert ct["pe_unrealized_pnl"] == 0.005
         assert ct["pe_sl_price"] == 190.0
+        assert ct["total_unrealized_pnl"] == 0.03
         assert ct["pe_native_bracket_active"] is True
         assert ct["pe_bracket_order_id"] == "BRK_150402_190"
+
+
+@pytest.mark.asyncio
+async def test_scenario_2b_unrealized_pnl_from_mark_cache(e2e_engine):
+    """Live WS mark cache should populate current_price and unrealized PnL on /status."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    e2e_engine.strategy.current_trade = StrategyTrade(
+        strategy_trade_id="STRANGLE_MARK_CACHE",
+        strategy_name="short_strangle",
+        trade_date="2026-09-01",
+        state=StrategyState.ACTIVE,
+        ce_leg=StrategyLeg(
+            leg_id="STRANGLE_MARK_CACHE_CE",
+            option_type=OptionType.CALL,
+            instrument_id="150401",
+            symbol="C-BTC-98000-010926",
+            strike=98000.0,
+            expiry_date="2026-09-01",
+            quantity=1.0,
+            intended_premium=100.0,
+            entry_timestamp=now_iso,
+            entry_fill_price=100.0,
+            sl_price=200.0,
+            bracket_order_id="BRK_CE",
+            exchange_sl_active=True,
+            status=LegStatus.OPEN,
+        ),
+        pe_leg=StrategyLeg(
+            leg_id="STRANGLE_MARK_CACHE_PE",
+            option_type=OptionType.PUT,
+            instrument_id="150402",
+            symbol="P-BTC-92000-010926",
+            strike=92000.0,
+            expiry_date="2026-09-01",
+            quantity=1.0,
+            intended_premium=100.0,
+            entry_timestamp=now_iso,
+            entry_fill_price=100.0,
+            sl_price=200.0,
+            bracket_order_id="BRK_PE",
+            exchange_sl_active=True,
+            status=LegStatus.OPEN,
+        ),
+    )
+    e2e_engine.delta_adapter.latest_tickers["C-BTC-98000-010926"] = Ticker(
+        symbol="C-BTC-98000-010926",
+        instrument_id="150401",
+        mark_price=70.0,
+    )
+    e2e_engine.delta_adapter.latest_tickers["P-BTC-92000-010926"] = Ticker(
+        symbol="P-BTC-92000-010926",
+        instrument_id="150402",
+        mark_price=130.0,
+    )
+
+    app = create_app(e2e_engine)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        data = (await ac.get("/api/v1/status")).json()["current_trade"]
+        assert data["ce_current_price"] == 70.0
+        assert data["pe_current_price"] == 130.0
+        assert data["ce_unrealized_pnl"] == 0.03  # (100-70)*1*0.001
+        assert data["pe_unrealized_pnl"] == -0.03  # (100-130)*1*0.001
+        assert data["total_unrealized_pnl"] == 0.0
 
 
 @pytest.mark.asyncio

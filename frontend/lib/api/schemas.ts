@@ -32,7 +32,7 @@ export const CurrentTradeSchema = z.object({
   trade_id: z.string(),
   strategy_name: z.string().default("short_strangle"),
   trade_state: z.string().default("ACTIVE"),
-  entry_timestamp: z.string().optional().default(""),
+  entry_timestamp: z.string().nullable().optional().default(""),
   ce_symbol: z.string().optional(),
   pe_symbol: z.string().optional(),
   ce_status: z.string().optional(),
@@ -45,14 +45,16 @@ export const CurrentTradeSchema = z.object({
   pe_entry_price: z.number().nullable().optional(),
   ce_current_price: z.number().nullable().optional(),
   pe_current_price: z.number().nullable().optional(),
+  ce_unrealized_pnl: z.coerce.number().optional(),
+  pe_unrealized_pnl: z.coerce.number().optional(),
   ce_sl_price: z.number().nullable().optional(),
   pe_sl_price: z.number().nullable().optional(),
   ce_native_bracket_active: z.boolean().optional(),
   pe_native_bracket_active: z.boolean().optional(),
   ce_bracket_order_id: z.string().nullable().optional(),
   pe_bracket_order_id: z.string().nullable().optional(),
-  total_realized_pnl: z.number().optional(),
-  total_unrealized_pnl: z.number().optional(),
+  total_realized_pnl: z.coerce.number().optional(),
+  total_unrealized_pnl: z.coerce.number().optional(),
 }).nullable();
 
 
