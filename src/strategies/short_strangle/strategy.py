@@ -292,17 +292,19 @@ class BTCShortStrangleStrategy(BaseStrategy):
                     tolerance_usd=self.config.premium_tolerance_usd,
                 )
 
+                ce_est = ce_tick.sell_premium or ce_tick.mid_price
+                pe_est = pe_tick.sell_premium or pe_tick.mid_price
                 trade = self.create_trade(
                     spot_price=spot_price,
                     ce_inst=ce_inst,
                     pe_inst=pe_inst,
-                    ce_est_prem=ce_tick.mid_price,
-                    pe_est_prem=pe_tick.mid_price,
+                    ce_est_prem=ce_est,
+                    pe_est_prem=pe_est,
                     now_ist=now_ist,
                 )
 
                 if self._on_entry_trigger:
-                    await self._on_entry_trigger(trade, ce_inst, pe_inst, ce_tick.mid_price, pe_tick.mid_price)
+                    await self._on_entry_trigger(trade, ce_inst, pe_inst, ce_est, pe_est)
 
             except OptionSelectionError as e:
                 self.logger.warning(f"Strike discovery skipped: {e}")

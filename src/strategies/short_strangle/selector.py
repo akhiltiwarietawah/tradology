@@ -2,7 +2,7 @@
 
 import logging
 from typing import List, Dict, Tuple, Optional
-from src.core.models.instrument import Instrument, OptionChain, InstrumentType, OptionType
+from src.core.models.instrument import Instrument, OptionChain
 from src.core.models.market_data import Ticker
 
 
@@ -17,6 +17,57 @@ class OptionSelector:
     def __init__(self, logger: Optional[logging.Logger] = None):
         self.logger = logger or logging.getLogger("option_selector")
 
+    @staticmethod
+    def premium_band(target_premium: float, tolerance_usd: float) -> Tuple[float, float]:
+        return max(1.0, target_premium - tolerance_usd), target_premium + tolerance_usd
+
+    @staticmethod
+    def is_premium_in_band(price: float, target_premium: float, tolerance_usd: float) -> bool:
+        lo, hi = OptionSelector.premium_band(target_premium, tolerance_usd)
+        return lo <= price <= hi
+
+    def _collect_side(
+        self,
+        instruments: List[Instrument],
+        tickers_map: Dict[str, Ticker],
+        spot_price: float,
+        is_call: bool,
+        min_acceptable_prem: float,
+        max_acceptable_prem: float,
+        target_premium: float,
+    ) -> List[Tuple[Instrument, Ticker, float, float]]:
+        candidates: List[Tuple[Instrument, Ticker, float, float]] = []
+        side = "Call" if is_call else "Put"
+        for inst in instruments:
+            if inst.strike_price is None:
+                continue
+            if is_call and inst.strike_price <= spot_price:
+                continue
+            if not is_call and inst.strike_price >= spot_price:
+                continue
+
+            ticker = tickers_map.get(inst.symbol) or tickers_map.get(inst.instrument_id)
+            if not ticker:
+                continue
+
+            prem = ticker.sell_premium
+            if prem <= 0:
+                self.logger.debug(
+                    f"{side} strike {inst.strike_price} skipped: no bid "
+                    f"(mark=${ticker.mark_price:.2f}, mid=${ticker.mid_price:.2f})"
+                )
+                continue
+
+            if min_acceptable_prem <= prem <= max_acceptable_prem:
+                candidates.append((inst, ticker, prem, abs(prem - target_premium)))
+            else:
+                self.logger.debug(
+                    f"{side} strike {inst.strike_price} bid ${prem:.2f} outside "
+                    f"[${min_acceptable_prem:.2f}-${max_acceptable_prem:.2f}] "
+                    f"(mark=${ticker.mark_price:.2f})"
+                )
+        return candidates
+
     def select_strangle_legs(
         self,
         option_chain: OptionChain,
@@ -26,76 +77,37 @@ class OptionSelector:
         tolerance_usd: float = 30.0,
     ) -> Tuple[Instrument, Ticker, Instrument, Ticker]:
         """
-        Find best OTM Call and OTM Put option contracts closest to target_premium within tolerance.
-        
-        Rules:
-        1. Call Strike > spot_price (OTM Call).
-        2. Put Strike < spot_price (OTM Put).
-        3. Option premium within [target_premium - tolerance, target_premium + tolerance].
-        4. Select candidate with min |premium - target_premium|.
+        Find best OTM Call and OTM Put contracts whose *sellable bid* is in band.
+
+        Market sells fill at the bid, not mark/mid. Using mark selected a PE
+        whose mark was $80.50 (in $70-$130) while the bid/fill was $64.
         """
         if spot_price <= 0:
             raise OptionSelectionError(f"Invalid underlying spot price: {spot_price}")
 
-        min_acceptable_prem = max(1.0, target_premium - tolerance_usd)
-        max_acceptable_prem = target_premium + tolerance_usd
+        min_acceptable_prem, max_acceptable_prem = self.premium_band(target_premium, tolerance_usd)
 
-        call_candidates: List[Tuple[Instrument, Ticker, float, float]] = []
-        put_candidates: List[Tuple[Instrument, Ticker, float, float]] = []
-
-        # Evaluate Calls
-        for inst in option_chain.calls:
-            if inst.strike_price is None or inst.strike_price <= spot_price:
-                continue  # Must be strictly OTM
-
-            ticker = tickers_map.get(inst.symbol) or tickers_map.get(inst.instrument_id)
-            if not ticker:
-                continue
-
-            prem = ticker.mid_price
-            if prem <= 0:
-                continue
-
-            if min_acceptable_prem <= prem <= max_acceptable_prem:
-                diff = abs(prem - target_premium)
-                call_candidates.append((inst, ticker, prem, diff))
-            else:
-                self.logger.debug(
-                    f"Call strike {inst.strike_price} prem ${prem:.2f} outside [${min_acceptable_prem:.2f}-${max_acceptable_prem:.2f}]"
-                )
-
-        # Evaluate Puts
-        for inst in option_chain.puts:
-            if inst.strike_price is None or inst.strike_price >= spot_price:
-                continue  # Must be strictly OTM
-
-            ticker = tickers_map.get(inst.symbol) or tickers_map.get(inst.instrument_id)
-            if not ticker:
-                continue
-
-            prem = ticker.mid_price
-            if prem <= 0:
-                continue
-
-            if min_acceptable_prem <= prem <= max_acceptable_prem:
-                diff = abs(prem - target_premium)
-                put_candidates.append((inst, ticker, prem, diff))
-            else:
-                self.logger.debug(
-                    f"Put strike {inst.strike_price} prem ${prem:.2f} outside [${min_acceptable_prem:.2f}-${max_acceptable_prem:.2f}]"
-                )
+        call_candidates = self._collect_side(
+            option_chain.calls, tickers_map, spot_price, True,
+            min_acceptable_prem, max_acceptable_prem, target_premium,
+        )
+        put_candidates = self._collect_side(
+            option_chain.puts, tickers_map, spot_price, False,
+            min_acceptable_prem, max_acceptable_prem, target_premium,
+        )
 
         if not call_candidates:
             raise OptionSelectionError(
-                f"No OTM Call found with premium between ${min_acceptable_prem:.2f} and ${max_acceptable_prem:.2f} (Spot: ${spot_price:.2f})"
+                f"No OTM Call with sellable bid between ${min_acceptable_prem:.2f} and "
+                f"${max_acceptable_prem:.2f} (Spot: ${spot_price:.2f})"
             )
 
         if not put_candidates:
             raise OptionSelectionError(
-                f"No OTM Put found with premium between ${min_acceptable_prem:.2f} and ${max_acceptable_prem:.2f} (Spot: ${spot_price:.2f})"
+                f"No OTM Put with sellable bid between ${min_acceptable_prem:.2f} and "
+                f"${max_acceptable_prem:.2f} (Spot: ${spot_price:.2f})"
             )
 
-        # Sort candidates by smallest deviation from target_premium
         call_candidates.sort(key=lambda x: x[3])
         put_candidates.sort(key=lambda x: x[3])
 
@@ -103,10 +115,14 @@ class OptionSelector:
         best_put_inst, best_put_ticker, best_put_prem, _ = put_candidates[0]
 
         self.logger.info(
-            f"Selected CE: {best_call_inst.symbol} (Strike: {best_call_inst.strike_price}, Est Premium: ${best_call_prem:.2f})"
+            f"Selected CE: {best_call_inst.symbol} (Strike: {best_call_inst.strike_price}, "
+            f"Sell bid: ${best_call_prem:.2f}, mark: ${best_call_ticker.mark_price:.2f}, "
+            f"ask: ${best_call_ticker.best_ask:.2f})"
         )
         self.logger.info(
-            f"Selected PE: {best_put_inst.symbol} (Strike: {best_put_inst.strike_price}, Est Premium: ${best_put_prem:.2f})"
+            f"Selected PE: {best_put_inst.symbol} (Strike: {best_put_inst.strike_price}, "
+            f"Sell bid: ${best_put_prem:.2f}, mark: ${best_put_ticker.mark_price:.2f}, "
+            f"ask: ${best_put_ticker.best_ask:.2f})"
         )
 
         return best_call_inst, best_call_ticker, best_put_inst, best_put_ticker

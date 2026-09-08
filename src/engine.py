@@ -13,6 +13,7 @@ from src.core.models.instrument import Instrument
 from src.core.models.market_data import Ticker
 from src.exchanges.service import ExchangeService
 from src.exchanges.delta.adapter import DeltaExchangeAdapter
+from src.strategies.short_strangle.selector import OptionSelector
 from src.strategies.short_strangle.strategy import BTCShortStrangleStrategy
 from src.strategies.short_strangle.models import ShortStrangleConfig
 from src.execution.execution_engine import ExecutionEngine
@@ -461,6 +462,20 @@ class TradingEngine:
         if success and ce_order and pe_order:
             ce_fill_px = ce_order.average_fill_price or ce_est_prem
             pe_fill_px = pe_order.average_fill_price or pe_est_prem
+
+            lo, hi = OptionSelector.premium_band(
+                self.settings.target_premium, self.settings.premium_tolerance_usd
+            )
+            for name, fill_px in (("CE", ce_fill_px), ("PE", pe_fill_px)):
+                if not OptionSelector.is_premium_in_band(
+                    fill_px, self.settings.target_premium, self.settings.premium_tolerance_usd
+                ):
+                    self.logger.error(
+                        f"{name} fill ${fill_px:.2f} is outside premium band ${lo:.2f}-${hi:.2f} "
+                        f"(target ${self.settings.target_premium:.2f} ± "
+                        f"${self.settings.premium_tolerance_usd:.2f}). "
+                        f"Position is live — not auto-unwound. Selection now uses bid, not mark."
+                    )
 
             self.strategy.on_entry_filled(
                 trade=trade,

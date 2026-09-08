@@ -26,6 +26,11 @@ class Ticker:
             return self.mark_price
         return self.last_price
 
+    @property
+    def sell_premium(self) -> float:
+        """Price a short actually hits on a market sell — the bid. 0 if unknown."""
+        return self.best_bid if self.best_bid > 0 else 0.0
+
 
 @dataclass
 class OrderBook:

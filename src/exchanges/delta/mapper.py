@@ -96,8 +96,20 @@ class DeltaMapper:
     @staticmethod
     def to_ticker(data: Dict[str, Any]) -> Ticker:
         quotes = data.get("quotes", {}) or {}
-        best_bid = float(quotes.get("best_bid", 0.0) or data.get("best_bid", 0.0) or 0.0)
-        best_ask = float(quotes.get("best_ask", 0.0) or data.get("best_ask", 0.0) or 0.0)
+        best_bid = float(
+            quotes.get("best_bid")
+            or quotes.get("bid")
+            or data.get("best_bid")
+            or data.get("bid")
+            or 0.0
+        )
+        best_ask = float(
+            quotes.get("best_ask")
+            or quotes.get("ask")
+            or data.get("best_ask")
+            or data.get("ask")
+            or 0.0
+        )
 
         mark_price = float(data.get("mark_price", 0.0) or 0.0)
         spot_price = float(data.get("spot_price", 0.0) or data.get("index_price", 0.0) or 0.0)
