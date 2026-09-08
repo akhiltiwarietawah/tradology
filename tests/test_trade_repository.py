@@ -1,10 +1,9 @@
 """Unit tests for TradeRepository operations, idempotency, multi-fill handling, and Decimal precision."""
 
 import pytest
-import pytest_asyncio
 from datetime import datetime, date, timezone
 from decimal import Decimal
-from sqlalchemy import text, select
+from sqlalchemy import select
 
 from src.persistence.db import DatabaseManager
 from src.persistence.trade_repository import TradeRepository
@@ -12,29 +11,6 @@ from src.persistence.models import TradeModel, TradeLegModel, OrderModel, FillMo
 from src.core.models.trade import StrategyTrade, StrategyLeg, StrategyState, LegStatus
 from src.core.models.order import Order, Fill, OrderSide, OrderType, OrderState
 from src.core.models.instrument import OptionType
-
-
-@pytest_asyncio.fixture
-async def repo_and_db(test_settings):
-    """Fixture providing DatabaseManager and TradeRepository with clean tables."""
-    db_mgr = DatabaseManager(settings=test_settings)
-    connected = await db_mgr.connect()
-    assert connected is True
-
-    await db_mgr.run_migrations(migrations_dir="migrations")
-
-    async with db_mgr.get_session() as session:
-        await session.execute(text("TRUNCATE TABLE fills, orders, trade_legs, trades CASCADE;"))
-        await session.commit()
-
-    repo = TradeRepository(db_manager=db_mgr)
-    yield repo, db_mgr
-
-    async with db_mgr.get_session() as session:
-        await session.execute(text("TRUNCATE TABLE fills, orders, trade_legs, trades CASCADE;"))
-        await session.commit()
-
-    await db_mgr.disconnect()
 
 
 @pytest.mark.asyncio

@@ -35,6 +35,9 @@ class StateStore:
             del self._active_trades[trade.strategy_trade_id]
         self._historical_trades.append(trade)
 
+    def get_historical_trades(self) -> List[StrategyTrade]:
+        return list(self._historical_trades)
+
     def update_position(self, position: Position):
         self._positions[position.symbol] = position
 

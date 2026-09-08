@@ -1,10 +1,9 @@
 """Integration tests for Database lifecycle hooks, PostgreSQL failure isolation, and restart recovery."""
 
 import pytest
-import pytest_asyncio
 from datetime import datetime, date, timezone
 from decimal import Decimal
-from sqlalchemy import text, select
+from sqlalchemy import select
 
 from src.engine import TradingEngine
 from src.config.settings import Settings
@@ -14,28 +13,6 @@ from src.core.models.instrument import Instrument, InstrumentType, OptionType
 from src.persistence.db import DatabaseManager
 from src.persistence.trade_repository import TradeRepository
 from src.persistence.models import TradeModel, TradeLegModel, OrderModel, FillModel
-
-
-@pytest_asyncio.fixture
-async def clean_db(test_settings):
-    """Ensure database has clean tables for lifecycle tests."""
-    db_mgr = DatabaseManager(settings=test_settings)
-    connected = await db_mgr.connect()
-    assert connected is True
-
-    await db_mgr.run_migrations(migrations_dir="migrations")
-
-    async with db_mgr.get_session() as session:
-        await session.execute(text("TRUNCATE TABLE fills, orders, trade_legs, trades CASCADE;"))
-        await session.commit()
-
-    yield db_mgr
-
-    async with db_mgr.get_session() as session:
-        await session.execute(text("TRUNCATE TABLE fills, orders, trade_legs, trades CASCADE;"))
-        await session.commit()
-
-    await db_mgr.disconnect()
 
 
 @pytest.mark.asyncio

@@ -1,41 +1,16 @@
 """Unit and integration tests for PerformanceService analytics, metrics, drawdown, and filters."""
 
 import pytest
-import pytest_asyncio
 from decimal import Decimal
 from datetime import datetime, date, timezone
 from typing import Optional, List, Dict, Any
 from sqlalchemy import text
-
 
 from src.persistence.db import DatabaseManager
 from src.persistence.trade_repository import TradeRepository
 from src.analytics.performance import PerformanceService
 from src.core.models.trade import StrategyTrade, StrategyLeg, StrategyState, LegStatus
 from src.core.models.instrument import OptionType
-
-
-@pytest_asyncio.fixture
-async def perf_db(test_settings):
-    """Fixture providing clean DatabaseManager and PerformanceService."""
-    db_mgr = DatabaseManager(settings=test_settings)
-    connected = await db_mgr.connect()
-    assert connected is True
-
-    await db_mgr.run_migrations(migrations_dir="migrations")
-
-    async with db_mgr.get_session() as session:
-        await session.execute(text("TRUNCATE TABLE fills, orders, trade_legs, trades CASCADE;"))
-        await session.commit()
-
-    service = PerformanceService(db_manager=db_mgr)
-    yield service, db_mgr
-
-    async with db_mgr.get_session() as session:
-        await session.execute(text("TRUNCATE TABLE fills, orders, trade_legs, trades CASCADE;"))
-        await session.commit()
-
-    await db_mgr.disconnect()
 
 
 async def insert_completed_trade(

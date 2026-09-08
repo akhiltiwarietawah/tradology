@@ -1,16 +1,106 @@
 """Pytest fixtures and mock objects for trading engine tests."""
 
 import pytest
+import pytest_asyncio
 from datetime import datetime, date, time, timezone
 from typing import Dict, List, Optional, Any, Callable, Awaitable
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from src.config.settings import Settings, Environment
+from src.persistence.db import DatabaseManager
+from src.persistence.trade_repository import TradeRepository
+from src.analytics.performance import PerformanceService
 from src.core.models.instrument import Instrument, OptionChain, InstrumentType, OptionType
 from src.core.models.market_data import Ticker
 from src.core.models.order import Order, OrderRequest, OrderSide, OrderType, OrderState
 from src.core.models.position import Position
 from src.core.models.trade import StrategyTrade, StrategyLeg, StrategyState, LegStatus
 from src.core.interfaces.exchange import BaseExchangeAdapter
+
+# Isolated DB for pytest — TRUNCATE here must never wipe dev `crypto_trading`.
+TEST_POSTGRES_DB = "crypto_trading_test"
+TRUNCATE_SQL = text("TRUNCATE TABLE fills, orders, trade_legs, trades CASCADE;")
+
+
+async def ensure_test_database(settings: Settings) -> None:
+    """Create crypto_trading_test if missing (connects to admin `postgres` DB)."""
+    admin_url = (
+        f"postgresql+asyncpg://{settings.postgres_user}:{settings.postgres_password}"
+        f"@{settings.postgres_host}:{settings.postgres_port}/postgres"
+    )
+    engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as conn:
+            exists = await conn.scalar(
+                text("SELECT 1 FROM pg_database WHERE datname = :db"),
+                {"db": settings.postgres_db},
+            )
+            if not exists:
+                await conn.execute(text(f'CREATE DATABASE "{settings.postgres_db}"'))
+    finally:
+        await engine.dispose()
+
+
+async def _truncate_trading_tables(db_mgr: DatabaseManager) -> None:
+    async with db_mgr.get_session() as session:
+        await session.execute(TRUNCATE_SQL)
+        await session.commit()
+
+
+@pytest.fixture
+def test_settings(tmp_path):
+    return Settings(
+        _env_file=None,
+        delta_env=Environment.TESTNET,
+        delta_testnet_api_key="mock_testnet_key",
+        delta_testnet_api_secret="mock_testnet_secret",
+        data_dir=str(tmp_path / "data"),
+        logs_dir=str(tmp_path / "logs"),
+        state_file=str(tmp_path / "data" / "trade_state_test.json"),
+        order_quantity=1.0,
+        target_premium=100.0,
+        premium_tolerance_usd=30.0,
+        sl_percentage=1.0,
+        postgres_db=TEST_POSTGRES_DB,
+    )
+
+
+@pytest_asyncio.fixture
+async def test_db_manager(test_settings):
+    """Connected DatabaseManager pointed at the isolated test database."""
+    await ensure_test_database(test_settings)
+    db_mgr = DatabaseManager(settings=test_settings)
+    connected = await db_mgr.connect()
+    assert connected is True
+    await db_mgr.run_migrations(migrations_dir="migrations")
+    yield db_mgr
+    await db_mgr.disconnect()
+
+
+@pytest_asyncio.fixture
+async def clean_db(test_db_manager):
+    """Clean tables before/after each DB integration test (test DB only)."""
+    await _truncate_trading_tables(test_db_manager)
+    yield test_db_manager
+    await _truncate_trading_tables(test_db_manager)
+
+
+@pytest_asyncio.fixture
+async def repo_and_db(clean_db):
+    repo = TradeRepository(db_manager=clean_db)
+    yield repo, clean_db
+
+
+@pytest_asyncio.fixture
+async def perf_db(clean_db):
+    service = PerformanceService(db_manager=clean_db)
+    yield service, clean_db
+
+
+@pytest_asyncio.fixture
+async def db_manager(clean_db):
+    yield clean_db
 
 
 class MockExchangeAdapter(BaseExchangeAdapter):
@@ -278,19 +368,3 @@ def mock_exchange():
 
     return adapter
 
-
-@pytest.fixture
-def test_settings(tmp_path):
-    return Settings(
-        _env_file=None,
-        delta_env=Environment.TESTNET,
-        delta_testnet_api_key="mock_testnet_key",
-        delta_testnet_api_secret="mock_testnet_secret",
-        data_dir=str(tmp_path / "data"),
-        logs_dir=str(tmp_path / "logs"),
-        state_file=str(tmp_path / "data" / "trade_state_test.json"),
-        order_quantity=1.0,
-        target_premium=100.0,
-        premium_tolerance_usd=30.0,
-        sl_percentage=1.0,
-    )

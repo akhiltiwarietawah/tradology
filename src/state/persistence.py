@@ -55,7 +55,11 @@ class StatePersistence:
             history_data = data.get("history", [])
             history = [StrategyTrade.from_dict(h) for h in history_data]
 
-            self.logger.info(f"Loaded state from {self.file_path}: Active Trade={current_trade.strategy_trade_id if current_trade else 'None'}, History Count={len(history)}")
+            self.logger.debug(
+                f"Loaded state from {self.file_path}: "
+                f"Active Trade={current_trade.strategy_trade_id if current_trade else 'None'}, "
+                f"History Count={len(history)}"
+            )
             return current_trade, history
         except Exception as e:
             self.logger.error(f"Error loading state from {self.file_path}: {e}. Returning clean state.", exc_info=True)

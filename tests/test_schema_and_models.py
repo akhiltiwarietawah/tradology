@@ -1,10 +1,9 @@
 """Tests for PostgreSQL Schema Migration, SQLAlchemy Models, Relationships, Constraints, and Decimal Handling."""
 
 import pytest
-import pytest_asyncio
 from datetime import datetime, date, timezone
 from decimal import Decimal
-from sqlalchemy import text, select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from src.persistence.db import DatabaseManager
@@ -14,32 +13,6 @@ from src.persistence.models import (
     OrderModel,
     FillModel,
 )
-
-
-@pytest_asyncio.fixture
-async def db_manager(test_settings):
-    """Fixture providing connected DatabaseManager with clean tables."""
-    db_mgr = DatabaseManager(settings=test_settings)
-    connected = await db_mgr.connect()
-    assert connected is True
-
-    # Run migrations
-    await db_mgr.run_migrations(migrations_dir="migrations")
-
-    # Clean test data before test
-    async with db_mgr.get_session() as session:
-        await session.execute(text("TRUNCATE TABLE fills, orders, trade_legs, trades CASCADE;"))
-        await session.commit()
-
-    yield db_mgr
-
-    # Cleanup after test
-    async with db_mgr.get_session() as session:
-        await session.execute(text("TRUNCATE TABLE fills, orders, trade_legs, trades CASCADE;"))
-        await session.commit()
-
-    await db_mgr.disconnect()
-
 
 
 @pytest.mark.asyncio

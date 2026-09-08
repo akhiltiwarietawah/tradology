@@ -35,7 +35,7 @@ def create_router(engine) -> APIRouter:
     async def get_trades() -> Dict[str, Any]:
         """Get current trade and archived history."""
         trade = engine.strategy.current_trade
-        _, history = engine.state_persistence.load_state()
+        history = engine.state_store.get_historical_trades()
         return {
             "current_trade": trade.to_dict() if trade else None,
             "history_count": len(history),
@@ -52,7 +52,7 @@ def create_router(engine) -> APIRouter:
         """Get performance analytics, drawdown curve, daily and monthly aggregates with optional filtering."""
         from src.analytics.performance import PerformanceService
 
-        _, history = engine.state_persistence.load_state()
+        history = engine.state_store.get_historical_trades()
         perf_service = PerformanceService(
             db_manager=getattr(engine, "db_manager", None),
             jsonl_path=f"{engine.settings.logs_dir}/trades.jsonl",
