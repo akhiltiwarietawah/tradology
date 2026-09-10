@@ -127,6 +127,52 @@ class Settings(BaseSettings):
     )
     rate_limit_per_minute: int = Field(default=120, description="Max API requests per minute per IP")
 
+    # Independent strategy enablement (existing BTC short strangle vs ETH Renko Ichimoku)
+    existing_strategy_enabled: bool = Field(
+        default=True,
+        description="Enable the existing BTC 0DTE short-strangle strategy. Default true (unchanged production).",
+    )
+    existing_strategy_account: str = Field(
+        default="primary",
+        description="Account label for the existing strategy. Uses primary Delta API keys.",
+    )
+    renko_ichimoku_strategy_enabled: bool = Field(
+        default=False,
+        description="Enable the independent ETHUSDT Renko+Ichimoku strategy. Default false.",
+    )
+    renko_ichimoku_account: str = Field(
+        default="renko",
+        description="Account label for Renko Ichimoku. If different from EXISTING_STRATEGY_ACCOUNT, use RENKO_ICHIMOKU_* keys.",
+    )
+    renko_ichimoku_api_key: str = Field(
+        default="",
+        description="Optional API key for the Renko account when it differs from the existing strategy account.",
+    )
+    renko_ichimoku_api_secret: str = Field(
+        default="",
+        description="Optional API secret for the Renko account when it differs from the existing strategy account.",
+    )
+    renko_ichimoku_symbol: str = Field(
+        default="ETHUSDT",
+        description="Delta perpetual symbol for the Renko strategy (ETHUSDT / ETHUSD).",
+    )
+    renko_ichimoku_position_size: float = Field(
+        default=0.0,
+        description="Renko strategy order size in contracts. Independent of ORDER_QUANTITY. 0 = no orders.",
+    )
+    renko_ichimoku_candle_resolution: str = Field(
+        default="15m",
+        description="Closed-candle Close feed used to confirm Renko bricks. Must match the intended chart interval.",
+    )
+    renko_ichimoku_state_file: Optional[str] = Field(
+        default=None,
+        description="Independent state file for Renko Ichimoku. Never the short-strangle state file.",
+    )
+    renko_ichimoku_flatten: bool = Field(
+        default=False,
+        description="If true at startup, send one reduce-only flatten of the Renko instrument then halt. Leave false during normal trading.",
+    )
+
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -153,6 +199,10 @@ class Settings(BaseSettings):
         if not self.state_file:
             env_suffix = "live" if self.delta_env == Environment.LIVE else "testnet"
             self.state_file = f"{self.data_dir}/trade_state_{env_suffix}.json"
+
+        if not self.renko_ichimoku_state_file:
+            env_suffix = "live" if self.delta_env == Environment.LIVE else "testnet"
+            self.renko_ichimoku_state_file = f"{self.data_dir}/renko_ichimoku_state_{env_suffix}.json"
 
         # Ensure LIVE environment requires valid credentials unless dry_run is true
         if self.delta_env == Environment.LIVE and not self.dry_run:
@@ -187,6 +237,17 @@ class Settings(BaseSettings):
     @property
     def active_ws_url(self) -> str:
         return self.delta_live_ws_url if self.delta_env == Environment.LIVE else self.delta_testnet_ws_url
+
+    def uses_separate_renko_account(self) -> bool:
+        return (
+            self.renko_ichimoku_strategy_enabled
+            and self.renko_ichimoku_account.strip().lower() != self.existing_strategy_account.strip().lower()
+        )
+
+    def renko_api_credentials(self) -> tuple[str, str]:
+        if self.uses_separate_renko_account() and self.renko_ichimoku_api_key and self.renko_ichimoku_api_secret:
+            return self.renko_ichimoku_api_key, self.renko_ichimoku_api_secret
+        return self.active_api_key, self.active_api_secret
 
     def get_parsed_entry_time(self) -> time:
         return datetime.strptime(self.entry_time_ist, "%H:%M:%S").time()

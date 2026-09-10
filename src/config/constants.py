@@ -28,6 +28,7 @@ PATH_POSITIONS = "/v2/positions"
 PATH_POSITIONS_MARGINED = "/v2/positions/margined"
 PATH_FILLS = "/v2/fills"
 PATH_WALLET_BALANCES = "/v2/wallet/balances"
+PATH_CANDLES = "/v2/history/candles"
 
 # WebSocket Channels
 WS_CHANNEL_TICKER = "v2/ticker"

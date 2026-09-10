@@ -16,6 +16,9 @@ from src.exchanges.delta.adapter import DeltaExchangeAdapter
 from src.strategies.short_strangle.selector import OptionSelector
 from src.strategies.short_strangle.strategy import BTCShortStrangleStrategy
 from src.strategies.short_strangle.models import ShortStrangleConfig
+from src.strategies.renko_ichimoku.prefix_logger import PrefixLogger
+from src.strategies.renko_ichimoku.runtime import RenkoIchimokuRuntime
+from src.strategies.renko_ichimoku.delta_bridge import DeltaCandleProductBridge
 from src.execution.execution_engine import ExecutionEngine
 from src.execution.order_manager import OrderManager
 from src.risk.risk_manager import RiskManager
@@ -124,6 +127,15 @@ class TradingEngine:
             on_sl=self._handle_strategy_sl_trigger,
             on_exit=self._handle_strategy_exit_trigger,
         )
+        self.strategy.logger = PrefixLogger(self.strategy.logger, "EXISTING")
+
+        # Independent ETHUSDT Renko + Ichimoku (optional). Does not share strangle state.
+        self.renko_adapter: Optional[DeltaExchangeAdapter] = None
+        self.renko_order_manager: Optional[OrderManager] = None
+        self.renko_execution: Optional[ExecutionEngine] = None
+        self.renko_runtime: Optional[RenkoIchimokuRuntime] = None
+        if self.settings.renko_ichimoku_strategy_enabled:
+            self._init_renko_ichimoku()
 
         # Scheduler
         self.scheduler = StrategyScheduler(
@@ -149,12 +161,92 @@ class TradingEngine:
         self._last_reconcile_time = 0.0
         self._last_reconciliation_result: Optional[ReconciliationResult] = None
 
+    def _init_renko_ichimoku(self) -> None:
+        """Wire a fully isolated Renko runtime. Never reuses strangle OrderManager or state file."""
+        separate = self.settings.uses_separate_renko_account()
+        if separate and (not self.settings.renko_ichimoku_api_key or not self.settings.renko_ichimoku_api_secret):
+            self.logger.error(
+                "[RENKO_ICHIMOKU] RENKO_ICHIMOKU_ACCOUNT differs from EXISTING_STRATEGY_ACCOUNT "
+                "but RENKO_ICHIMOKU_API_KEY / RENKO_ICHIMOKU_API_SECRET are empty. Strategy not started."
+            )
+            return
+        is_live = self.settings.delta_env.value == "live"
+        if separate:
+            key, secret = self.settings.renko_api_credentials()
+            self.renko_adapter = DeltaExchangeAdapter(
+                rest_url=self.settings.active_rest_url,
+                ws_url=self.settings.active_ws_url,
+                api_key=key,
+                api_secret=secret,
+                is_testnet=not is_live,
+                logger=PrefixLogger(self.logger, "RENKO_ICHIMOKU"),
+            )
+            self.renko_adapter._exchange_name = "delta_india_renko"
+        else:
+            self.renko_adapter = self.delta_adapter
+        self.renko_order_manager = OrderManager(logger=PrefixLogger(self.logger, "RENKO_ICHIMOKU"))
+        self.renko_execution = ExecutionEngine(
+            exchange_adapter=self.renko_adapter,
+            order_manager=self.renko_order_manager,
+            trade_logger=self.trade_logger,
+            entry_timeout_seconds=self.settings.two_leg_entry_timeout_seconds,
+            logger=PrefixLogger(self.logger, "RENKO_ICHIMOKU"),
+        )
+        bridge = DeltaCandleProductBridge(self.renko_adapter, PrefixLogger(self.logger, "RENKO_ICHIMOKU"))
+        self.renko_runtime = RenkoIchimokuRuntime(
+            account_name=self.settings.renko_ichimoku_account,
+            symbol=self.settings.renko_ichimoku_symbol,
+            position_size=self.settings.renko_ichimoku_position_size,
+            candle_resolution=self.settings.renko_ichimoku_candle_resolution,
+            state_file=self.settings.renko_ichimoku_state_file or "data/renko_ichimoku_state.json",
+            execution_engine=self.renko_execution,
+            order_manager=self.renko_order_manager,
+            candle_source=bridge,
+            product_source=bridge,
+            logger=self.logger,
+            dry_run=self.settings.dry_run,
+            kill_switch=self.settings.kill_switch,
+            exchange_ops=self.renko_adapter,
+            flatten=self.settings.renko_ichimoku_flatten,
+        )
+        self.logger.info(
+            f"[RENKO_ICHIMOKU] Configured account={self.settings.renko_ichimoku_account} "
+            f"symbol={self.settings.renko_ichimoku_symbol} size={self.settings.renko_ichimoku_position_size} "
+            f"separate_account={separate}"
+        )
+
+    def _warn_if_renko_disabled_with_open_state(self) -> None:
+        """If Renko is disabled, do not trade — but warn if a persisted position was left unmanaged."""
+        if self.settings.renko_ichimoku_strategy_enabled:
+            return
+        path = self.settings.renko_ichimoku_state_file
+        if not path:
+            return
+        from pathlib import Path
+        if not Path(path).exists():
+            return
+        try:
+            from src.strategies.renko_ichimoku.state import RenkoIchimokuStateStore
+
+            st = RenkoIchimokuStateStore(path, PrefixLogger(self.logger, "RENKO_ICHIMOKU")).load()
+        except Exception:
+            return
+        if int(st.position or 0) != 0:
+            self.logger.critical(
+                "[RENKO_ICHIMOKU] Strategy is DISABLED but state file still has position="
+                f"{st.position} symbol={st.resolved_symbol or st.symbol} order_id={st.entry_order_id}. "
+                "This process will not manage or close it. To flatten once: set "
+                "RENKO_ICHIMOKU_STRATEGY_ENABLED=true and RENKO_ICHIMOKU_FLATTEN=true, restart, "
+                "then set both back (ENABLED=false, FLATTEN=false)."
+            )
+
     async def start(self):
         """Start the entire trading engine."""
         self._running = True
         self.start_time = datetime.now(timezone.utc)
         self.last_heartbeat_time = datetime.now(timezone.utc)
         self.logger.info("Starting Trading Engine components...")
+        self._warn_if_renko_disabled_with_open_state()
 
         # 1. Recover persisted state (Atomic JSON is primary recovery source)
         recovered_trade, history = self.state_persistence.load_state()
@@ -227,16 +319,18 @@ class TradingEngine:
                 )
         else:
             # Subscribe to market data for active legs (if recovering active trade)
-            if self.strategy.current_trade and self.strategy.current_trade.is_active:
+            if self.settings.existing_strategy_enabled and self.strategy.current_trade and self.strategy.current_trade.is_active:
                 active_symbols = [leg.symbol for leg in self.strategy.current_trade.get_open_legs()]
                 if active_symbols:
                     await self.delta_adapter.subscribe_market_data(active_symbols, self._on_market_tick_wrapper)
 
-            # Start Strategy
-            await self.strategy.start()
+            if self.settings.existing_strategy_enabled:
+                await self.strategy.start()
+            else:
+                self.logger.info("[EXISTING] Disabled. BTC short strangle will not start or place orders.")
 
             # Startup / Recovery notification
-            if self.strategy.current_trade and self.strategy.current_trade.is_active:
+            if self.settings.existing_strategy_enabled and self.strategy.current_trade and self.strategy.current_trade.is_active:
                 ce_brk = self.strategy.current_trade.ce_leg.bracket_order_id if self.strategy.current_trade.ce_leg else None
                 pe_brk = self.strategy.current_trade.pe_leg.bracket_order_id if self.strategy.current_trade.pe_leg else None
                 brk_active = "ACTIVE" if (ce_brk or pe_brk) else "NONE"
@@ -246,12 +340,17 @@ class TradingEngine:
                     message=f"🔄 Bot restarted. Recovered active {self.strategy.current_trade.strategy_name} trade {self.strategy.current_trade.strategy_trade_id}. CE/PE positions reconciled. Native brackets: {brk_active}.",
                     trade_id=self.strategy.current_trade.strategy_trade_id,
                 )
-            else:
+            elif self.settings.existing_strategy_enabled:
                 await self.alert_service.send(
                     severity=AlertSeverity.SUCCESS,
                     event="STARTUP",
                     message="✅ Bot started. No active trade. Exchange synchronized.",
                 )
+
+        if self.renko_runtime:
+            if self.renko_adapter is not None and self.renko_adapter is not self.delta_adapter:
+                await self.renko_adapter.initialize()
+            await self.renko_runtime.start()
 
         # 7. Start Scheduler (runs background reconciliation, monitoring, and timer loops)
         await self.scheduler.start()
@@ -265,7 +364,8 @@ class TradingEngine:
     async def _on_market_tick_wrapper(self, ticker: Ticker):
         """Wrapper for market data ticks to update watchdog timestamps."""
         self.last_ws_tick_time = datetime.now(timezone.utc)
-        await self.strategy.on_tick(ticker)
+        if self.settings.existing_strategy_enabled:
+            await self.strategy.on_tick(ticker)
 
     def _save_state(self, trade: Optional[StrategyTrade] = None):
         """Atomically persist trade state and historical trades to disk."""
@@ -300,17 +400,21 @@ class TradingEngine:
         self._running = False
         self.logger.info("Stopping Trading Engine...")
         await self.scheduler.stop()
-        if self.strategy.is_active:
+        if self.settings.existing_strategy_enabled and self.strategy.is_active:
             await self.strategy.stop()
 
         # Flush state
         self._save_state()
+        if self.renko_runtime:
+            self.renko_runtime.store.save(self.renko_runtime.state)
 
         # Disconnect Database
         if self.db_manager.is_connected:
             await self.db_manager.disconnect()
 
         await self.exchange_service.close_all()
+        if self.renko_adapter is not None and self.renko_adapter is not self.delta_adapter:
+            await self.renko_adapter.close()
         self.logger.info("Trading Engine stopped cleanly.")
 
     async def reconcile_state(self, trade: Optional[StrategyTrade] = None) -> ReconciliationResult:
@@ -364,11 +468,20 @@ class TradingEngine:
             )
 
         # Strategy timer (only fires entry/SL if strategy is active)
-        if self.strategy.is_active:
+        if self.settings.existing_strategy_enabled and self.strategy.is_active:
             await self.strategy.on_timer(now_ist, history=self.state_store._historical_trades)
 
+        if self.renko_runtime:
+            self.renko_runtime.kill_switch = (
+                self.settings.kill_switch or self.risk_manager.is_kill_switch_active
+            )
+            try:
+                await self.renko_runtime.on_timer(now_ist)
+            except Exception as e:
+                self.logger.error(f"[RENKO_ICHIMOKU] Timer error: {e}", exc_info=True)
+
         # Risk check
-        if self.strategy.current_trade and self.strategy.current_trade.is_active:
+        if self.settings.existing_strategy_enabled and self.strategy.current_trade and self.strategy.current_trade.is_active:
             breached, loss = self.risk_manager.check_daily_loss_limit(self.strategy.current_trade)
             if breached:
                 self.logger.critical(f"Max daily loss breached (${loss:.2f}). Triggering emergency square-off!")
@@ -381,11 +494,11 @@ class TradingEngine:
             self._last_reconcile_time = now_ts
             reconcile_res = await self.reconcile_state()
             if reconcile_res.is_synchronized:
-                if not self.strategy.is_active and not self.risk_manager.is_kill_switch_active:
+                if self.settings.existing_strategy_enabled and not self.strategy.is_active and not self.risk_manager.is_kill_switch_active:
                     self.logger.info("🎉 Background exchange reconciliation succeeded! Activating strategy for trading...")
                     await self.strategy.start()
             else:
-                if self.strategy.is_active:
+                if self.settings.existing_strategy_enabled and self.strategy.is_active:
                     self.logger.warning(
                         f"⚠️ Background exchange reconciliation failed (Status: {reconcile_res.status}). Pausing strategy trading."
                     )
@@ -403,8 +516,12 @@ class TradingEngine:
         pe_est_prem: float,
     ):
         """Handle entry signal emitted from strategy."""
+        if not self.settings.existing_strategy_enabled:
+            self.logger.warning("[EXISTING] Disabled. Ignoring short-strangle entry trigger.")
+            return
+
         if not self.strategy.is_active:
-            self.logger.warning("Strategy is inactive (reconciliation pending or failed). Aborting entry.")
+            self.logger.warning("[EXISTING] Strategy is inactive (reconciliation pending or failed). Aborting entry.")
             return
 
         # Pre-trade risk check
@@ -837,6 +954,15 @@ class TradingEngine:
                 "last_loop": self.last_loop_time.isoformat() if self.last_loop_time else None,
             },
             "current_trade": trade_data,
+            "strategies": {
+                "existing": {
+                    "name": "short_strangle",
+                    "enabled": self.settings.existing_strategy_enabled,
+                    "account": self.settings.existing_strategy_account,
+                    "active": self.strategy.is_active if self.settings.existing_strategy_enabled else False,
+                },
+                "renko_ichimoku": None if not self.renko_runtime else self.renko_runtime.snapshot(),
+            },
             "alerts": {
                 "recent_count": len(self.alert_service.get_recent_alerts()),
                 "recent_alerts": self.alert_service.get_recent_alerts()[-10:],

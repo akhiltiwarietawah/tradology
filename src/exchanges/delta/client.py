@@ -21,6 +21,7 @@ from src.config.constants import (
     PATH_POSITIONS_MARGINED,
     PATH_FILLS,
     PATH_WALLET_BALANCES,
+    PATH_CANDLES,
 )
 
 
@@ -470,3 +471,24 @@ class DeltaRestClient:
         """Fetch wallet balances."""
         res = await self.request("GET", PATH_WALLET_BALANCES, auth_required=True)
         return res.get("result", []) if isinstance(res, dict) else []
+
+    async def get_candles(
+        self,
+        symbol: str,
+        resolution: str,
+        start: Optional[int] = None,
+        end: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """OHLC candles. Public endpoint; used by Renko Ichimoku only."""
+        params: Dict[str, Any] = {"symbol": symbol, "resolution": resolution}
+        if start is not None:
+            params["start"] = str(int(start))
+        if end is not None:
+            params["end"] = str(int(end))
+        res = await self.request("GET", PATH_CANDLES, params=params, auth_required=False)
+        result = res.get("result", []) if isinstance(res, dict) else []
+        return result if isinstance(result, list) else []
+
+    async def get_perpetual_products(self, states: str = "live") -> List[Dict[str, Any]]:
+        """Perpetual contracts only. Does not change default option-product listing."""
+        return await self.get_products(contract_types="perpetual_futures", states=states)

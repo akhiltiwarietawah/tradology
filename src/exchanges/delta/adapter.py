@@ -1,6 +1,7 @@
 """Delta Exchange India Adapter implementing BaseExchangeAdapter."""
 
 import logging
+import time
 from typing import Dict, List, Optional, Any, Callable, Awaitable
 from datetime import date
 
@@ -253,3 +254,44 @@ class DeltaExchangeAdapter(BaseExchangeAdapter):
     async def get_bracket_order(self, order_id: str) -> Optional[Dict[str, Any]]:
         """Fetch bracket order details from Delta."""
         return await self.rest_client.get_bracket_order(order_id=int(order_id))
+
+    async def get_candles(self, symbol: str, resolution: str, limit: int = 500) -> List[Dict[str, Any]]:
+        """Return newest-first or oldest-first candles; callers sort by time."""
+        end = int(time.time())
+        step = {
+            "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
+            "1h": 3600, "2h": 7200, "4h": 14400, "1d": 86400,
+        }.get(resolution, 900)
+        start = end - int(limit) * step
+        return await self.rest_client.get_candles(symbol=symbol, resolution=resolution, start=start, end=end)
+
+    async def get_perpetual_product(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Resolve a perpetual by symbol. Tries requested symbol then common ETH aliases."""
+        products = await self.rest_client.get_perpetual_products()
+        wanted = [symbol.upper(), symbol.upper().replace("USDT", "USD"), symbol.upper().replace("USD", "USDT")]
+        seen = []
+        for w in wanted:
+            if w not in seen:
+                seen.append(w)
+        exact = symbol.upper()
+        for w in seen:
+            for p in products:
+                if str(p.get("symbol", "")).upper() != w:
+                    continue
+                ct = str(p.get("contract_type", "")).lower()
+                if "perpetual" not in ct:
+                    continue
+                inst = DeltaMapper.to_instrument(p)
+                if inst.instrument_type != InstrumentType.PERPETUAL:
+                    continue
+                return {
+                    "id": p.get("id"),
+                    "instrument_id": inst.instrument_id,
+                    "symbol": inst.symbol,
+                    "contract_type": p.get("contract_type"),
+                    "instrument_type": inst.instrument_type.value,
+                    "exact_symbol_match": w == exact,
+                    "raw": p,
+                }
+        self.logger.warning(f"No perpetual product found for {symbol} (tried {seen})")
+        return None

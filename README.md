@@ -179,6 +179,14 @@ docker compose up -d postgres
 
 ---
 
+## Independent ETHUSDT Renko + Ichimoku
+
+A second strategy can run in the same process without changing short-strangle logic. See **[docs/RENKO_ICHIMOKU.md](docs/RENKO_ICHIMOKU.md)** for switches, accounts, and position size.
+
+Defaults keep production behavior: `EXISTING_STRATEGY_ENABLED=true`, `RENKO_ICHIMOKU_STRATEGY_ENABLED=false`.
+
+---
+
 ## Running the Test Suite
 
 ```bash
