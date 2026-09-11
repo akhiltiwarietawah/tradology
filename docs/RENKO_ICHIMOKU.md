@@ -87,7 +87,9 @@ Each strategy sends orders only to its assigned account. State files remain sepa
 
 ### Same Delta account (important)
 
-If both strategies use the **same** Delta account and the **same** ETH perpetual product, the exchange holds **one net position** per contract. Software keeps separate strategy state files, but Delta does not. Any manual ETH trade or another bot on that account can make Renko local state disagree with the exchange; the Renko path **halts** on mismatch (startup and every ~30s). Do not assume two independent exchange positions on one account.
+If both strategies use the **same** Delta account and the **same** ETH perpetual product, the exchange holds **one net position** per contract. Software keeps separate strategy state files, but Delta does not. Do not assume two independent exchange positions on one account.
+
+**Manual close on exchange:** If local state shows an open position but the exchange position for the Renko instrument is **flat (0)**, reconcile (startup and every ~30s) syncs local state to flat, logs `Position manually closed`, looks up the latest closing fill/order on Delta when available, and resumes trading. Opposite-side exposure (e.g. local long, exchange short) still **halts** and needs manual intervention.
 
 ### Flatten when disabling Renko
 

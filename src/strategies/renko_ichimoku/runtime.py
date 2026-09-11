@@ -64,6 +64,15 @@ class ExchangeOps(Protocol):
     async def get_order_by_client_id(self, client_order_id: str) -> Optional[Order]:
         ...
 
+    async def get_recent_fills_for_product(
+        self,
+        instrument_id: str,
+        side: Optional[str] = None,
+        page_size: int = 10,
+        start_time_us: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        ...
+
 
 def signed_position_size(pos: Position) -> float:
     """Delta may send signed size or absolute size + side."""
@@ -85,6 +94,20 @@ def local_side_from_exchange(signed: float) -> int:
     if signed < -1e-9:
         return -1
     return 0
+
+
+def normalized_local_side(position: int) -> int:
+    """Map persisted position to direction (-1/0/1). Legacy bad values like 10 -> 1."""
+    if position in (-1, 0, 1):
+        return position
+    if position > 0:
+        return 1
+    if position < 0:
+        return -1
+    return 0
+
+
+MANUAL_CLOSE_REASON = "Position manually closed (exchange flat, local state was open)."
 
 
 def deterministic_client_order_id(brick_index: int, action_kind: str) -> str:
@@ -122,6 +145,7 @@ class RenkoIchimokuRuntime:
         exchange_ops: Optional[ExchangeOps] = None,
         flatten: bool = False,
         fill_persister: Optional[Callable[..., Awaitable[None]]] = None,
+        manual_close_persister: Optional[Callable[..., Awaitable[None]]] = None,
         contract_value: float = 0.01,
     ):
         self.account_name = account_name
@@ -141,6 +165,7 @@ class RenkoIchimokuRuntime:
         self.allow_trade_on_warmup = allow_trade_on_warmup
         self.flatten = flatten
         self.fill_persister = fill_persister
+        self.manual_close_persister = manual_close_persister
         self.contract_value = float(contract_value)
         self._last_position_reconcile_ts = 0.0
 
@@ -167,18 +192,16 @@ class RenkoIchimokuRuntime:
         self.logger.critical(f"ORDERS HALTED: {reason}")
         self.store.save(self.state)
 
-    def _clear_transient_reconcile_halt(self) -> None:
-        """Resume after a transient API/network reconcile failure once positions read OK."""
+    def _clear_reconcile_halt(self) -> None:
+        """Resume after reconcile confirms local and exchange positions agree."""
         if not self.state.orders_halted:
+            self._trading_unlocked = True
             return
-        if self.state.halt_reason != TRANSIENT_RECONCILE_HALT_REASON:
-            return
+        prev = self.state.halt_reason
         self.state.orders_halted = False
         self.state.halt_reason = None
         self._trading_unlocked = True
-        self.logger.info(
-            "Exchange position reconcile recovered after transient failure. Renko trading resumed."
-        )
+        self.logger.info(f"Exchange position reconcile OK. Trading resumed (was halted: {prev}).")
         self.store.save(self.state)
 
     async def start(self) -> None:
@@ -243,14 +266,14 @@ class RenkoIchimokuRuntime:
         self.store.save(self.state)
 
     async def on_timer(self, now_ist: Optional[datetime] = None) -> None:
-        if not self._started or self.state.orders_halted:
+        if not self._started:
             return
         now = self.now_fn()
         if now - self._last_position_reconcile_ts >= POSITION_RECONCILE_INTERVAL_SECONDS:
             await self._reconcile_exchange_position()
             self._last_position_reconcile_ts = now
-            if self.state.orders_halted:
-                return
+        if self.state.orders_halted:
+            return
         try:
             candles = await self.candle_source.fetch_closed_candles(self.symbol, self.candle_resolution, 50)
         except Exception as e:
@@ -595,26 +618,159 @@ class RenkoIchimokuRuntime:
             return
         ex_side = local_side_from_exchange(signed)
         local = self.state.position
+        local_side = normalized_local_side(local)
+        if local_side != local:
+            self.logger.warning(
+                f"Normalized invalid persisted position={local} to side={local_side}. "
+                "position in state must be -1, 0, or 1 (direction only)."
+            )
         self.logger.info(
-            f"Reconcile local_pos={local} exchange_signed_size={signed} "
-            f"symbol={self.symbol} instrument_id={self.instrument_id} account={self.account_name}"
+            f"Reconcile local_pos={local} local_side={local_side} exchange_signed_size={signed} "
+            f"symbol={self.symbol} instrument_id={self.instrument_id} account={self.account_name} "
+            f"entry_order_id={self.state.entry_order_id}"
         )
-        if local == 0 and ex_side == 0:
-            self._clear_transient_reconcile_halt()
+        if local_side == 0 and ex_side == 0:
+            self._clear_reconcile_halt()
             return
-        if local != 0 and ex_side == local:
+        if local_side != 0 and ex_side == 0:
+            await self._sync_manual_close(local_side)
+            return
+        if local_side != 0 and ex_side != 0 and local_side != ex_side:
+            self._halt(
+                f"Position side mismatch local={local_side} exchange_signed={signed} ({self.symbol}). "
+                "Opposite-side exposure on exchange. Manual intervention required."
+            )
+            return
+        if local_side != 0 and ex_side == local_side:
             if self.position_size > 0 and abs(abs(signed) - self.position_size) > 1e-6:
                 self._halt(
                     f"Exchange size {signed} does not match RENKO_ICHIMOKU_POSITION_SIZE={self.position_size}."
                 )
                 return
-            self._clear_transient_reconcile_halt()
+            if local_side != local:
+                self.state.position = local_side
+                self.store.save(self.state)
+            self._clear_reconcile_halt()
             return
         self._halt(
             f"Position mismatch local={local} exchange_signed={signed} ({self.symbol}). "
             "No orders until this is resolved. Same Delta account nets one position per contract; "
             "do not assume strategy-level isolation on the exchange."
         )
+
+    async def _lookup_manual_close_fill(self, local_side: int) -> Optional[Dict[str, Any]]:
+        if not self.exchange_ops or not self.instrument_id:
+            return None
+        getter = getattr(self.exchange_ops, "get_recent_fills_for_product", None)
+        if not callable(getter):
+            return None
+        close_side = "sell" if local_side > 0 else "buy"
+        start_time_us = None
+        if self.state.entry_time:
+            start_time_us = int(max(0.0, self.state.entry_time - 300.0) * 1_000_000)
+        try:
+            fills = await getter(
+                instrument_id=self.instrument_id,
+                side=close_side,
+                page_size=20,
+                start_time_us=start_time_us,
+            )
+        except Exception as e:
+            self.logger.warning(f"Manual close fill lookup failed: {e}")
+            return None
+        if not fills:
+            return None
+        return self._pick_latest_fill(fills)
+
+    @staticmethod
+    def _pick_latest_fill(fills: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        best: Optional[Dict[str, Any]] = None
+        best_ts = -1.0
+        for fill in fills:
+            ts_raw = fill.get("created_at") or fill.get("timestamp") or fill.get("time")
+            ts = 0.0
+            if ts_raw is not None:
+                try:
+                    ts = float(ts_raw)
+                    if ts > 1e12:
+                        ts /= 1_000_000.0
+                except (TypeError, ValueError):
+                    ts = 0.0
+            if best is None or ts >= best_ts:
+                best = fill
+                best_ts = ts
+        return best
+
+    @staticmethod
+    def _fill_price(fill: Dict[str, Any]) -> Optional[float]:
+        for key in ("price", "fill_price", "avg_fill_price", "average_fill_price"):
+            val = fill.get(key)
+            if val is not None:
+                try:
+                    px = float(val)
+                    if px > 0:
+                        return px
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    async def _sync_manual_close(self, local_side: int) -> None:
+        """Exchange is flat but local state still shows an open position (manual close)."""
+        entry_order_id = self.state.entry_order_id
+        close_fill = await self._lookup_manual_close_fill(local_side)
+        exit_order_id = None
+        exit_price = None
+        if close_fill:
+            exit_order_id = close_fill.get("order_id") or close_fill.get("id")
+            exit_price = self._fill_price(close_fill)
+            self.logger.info(
+                f"Manual close fill found entry_order_id={entry_order_id} "
+                f"exit_order_id={exit_order_id} exit_price={exit_price} fill={close_fill}"
+            )
+        else:
+            self.logger.warning(
+                f"No closing fill found on exchange for {self.symbol} since entry. "
+                f"entry_order_id={entry_order_id}. Syncing local state to flat anyway."
+            )
+
+        prev_trade_id = self.state.active_trade_id
+        prev_entry = self.state.entry_price
+        prev_entry_time = self.state.entry_time
+        self.state.position = 0
+        self.state.entry_price = None
+        self.state.active_trade_id = None
+        self.state.entry_time = None
+        if exit_order_id:
+            self.state.entry_order_id = str(exit_order_id)
+        self._clear_in_flight()
+        self._clear_reconcile_halt()
+        self.logger.warning(
+            f"{MANUAL_CLOSE_REASON} entry_order_id={entry_order_id} "
+            f"exit_order_id={exit_order_id} trade_id={prev_trade_id} symbol={self.symbol}"
+        )
+        self.store.save(self.state)
+
+        if self.manual_close_persister:
+            try:
+                await self.manual_close_persister(
+                    local_side=local_side,
+                    entry_order_id=entry_order_id,
+                    exit_order_id=str(exit_order_id) if exit_order_id else None,
+                    exit_price=exit_price,
+                    entry_price=prev_entry,
+                    entry_time=prev_entry_time,
+                    trade_id=prev_trade_id,
+                    runtime=self,
+                )
+            except Exception as e:
+                self.logger.warning(
+                    f"DATABASE: manual close persist failed (local state already flat): "
+                    f"{type(e).__name__}: {e}"
+                )
+
+    async def _clear_transient_reconcile_halt(self) -> None:
+        """Backward-compatible alias for tests."""
+        self._clear_reconcile_halt()
 
     async def flatten_position(self) -> bool:
         """Reduce-only close of the *exchange* Renko instrument. Does not use historical signals."""

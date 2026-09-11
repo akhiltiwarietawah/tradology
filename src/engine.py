@@ -213,6 +213,7 @@ class TradingEngine:
             exchange_ops=self.renko_adapter,
             flatten=self.settings.renko_ichimoku_flatten,
             fill_persister=self._persist_renko_fill_to_db,
+            manual_close_persister=self._persist_renko_manual_close_to_db,
         )
         self.logger.info(
             f"[RENKO_ICHIMOKU] Configured account={self.settings.renko_ichimoku_account} "
@@ -357,6 +358,7 @@ class TradingEngine:
                 await self.renko_adapter.initialize()
             await self.renko_runtime.start()
             await self._backfill_renko_db_if_needed()
+            await self._close_orphan_renko_db_trade_if_flat()
 
         # 7. Start Scheduler (runs background reconciliation, monitoring, and timer loops)
         await self.scheduler.start()
@@ -851,6 +853,67 @@ class TradingEngine:
                 f"⚠️ DATABASE: UNAVAILABLE — trading continues using file persistence + exchange reconciliation (Reconciliation sync error: {e})"
             )
 
+    async def _persist_renko_manual_close_to_db(self, **kwargs) -> None:
+        """Record a manual exchange close when reconcile syncs local state to flat."""
+        if not self.db_manager.is_connected or not self.renko_runtime:
+            return
+        local_side = int(kwargs["local_side"])
+        entry_order_id = kwargs.get("entry_order_id")
+        exit_order_id = kwargs.get("exit_order_id")
+        exit_price = kwargs.get("exit_price")
+        entry_price = kwargs.get("entry_price")
+        entry_time = kwargs.get("entry_time")
+        trade_id = kwargs.get("trade_id")
+        rt = kwargs["runtime"]
+        last_brick_close = rt.state.last_brick_close
+        action_kind = "exit_long" if local_side > 0 else "exit_short"
+        brick_index = rt.state.last_traded_brick_index or 0
+        trade_id = trade_id or make_renko_trade_id(brick_index)
+        from src.core.models.order import Order, OrderSide, OrderState, OrderType
+
+        synth_order = Order(
+            order_id=str(exit_order_id or f"manual-close-{trade_id}"),
+            client_order_id=f"MANUAL{brick_index}"[:32],
+            instrument_id=str(rt.instrument_id or ""),
+            symbol=rt.symbol,
+            side=OrderSide.SELL if local_side > 0 else OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=rt.position_size,
+            filled_quantity=rt.position_size,
+            average_fill_price=exit_price or entry_price or last_brick_close,
+            state=OrderState.FILLED,
+            strategy_id="renko_ichimoku",
+        )
+        synth_brick = type(
+            "B",
+            (),
+            {
+                "index": brick_index,
+                "close": exit_price or entry_price or last_brick_close or 0.0,
+            },
+        )()
+        reason = "position_manually_closed"
+        async with asyncio.timeout(self.settings.db_timeout_seconds):
+            await self.renko_trade_repo.record_exit(
+                trade_id=trade_id,
+                order=synth_order,
+                brick=synth_brick,
+                action_kind=action_kind,
+                action_reason=reason,
+                entry_price=float(entry_price or synth_brick.close or 0.0),
+                entry_time=entry_time,
+                quantity=rt.position_size,
+                config_extra={
+                    "manual_close_entry_order_id": entry_order_id,
+                    "manual_close_exit_order_id": exit_order_id,
+                },
+            )
+        self.logger.info(
+            f"[RENKO_ICHIMOKU] DATABASE: persisted manual close trade_id={trade_id} "
+            f"entry_order_id={entry_order_id} exit_order_id={exit_order_id}"
+        )
+        self.last_db_operation_time = datetime.now(timezone.utc)
+
     async def _persist_renko_fill_to_db(self, **kwargs) -> None:
         """Persist Renko entry/exit lifecycle to PostgreSQL (non-blocking for trading)."""
         if not self.db_manager.is_connected or not self.renko_runtime:
@@ -956,6 +1019,74 @@ class TradingEngine:
         except Exception as e:
             self.logger.warning(
                 f"[RENKO_ICHIMOKU] DATABASE: open-position backfill failed (trading continues): {e}"
+            )
+
+    async def _close_orphan_renko_db_trade_if_flat(self) -> None:
+        """Close ACTIVE Renko DB row when runtime state is already flat (e.g. failed manual-close persist)."""
+        if not self.renko_runtime or not self.db_manager.is_connected:
+            return
+        if self.renko_runtime.state.position != 0:
+            return
+        try:
+            async with asyncio.timeout(self.settings.db_timeout_seconds):
+                open_trade = await self.renko_trade_repo.get_open_trade()
+                if not open_trade:
+                    return
+                trade_dict = await self.renko_trade_repo.trade_to_dict(open_trade)
+                legs = trade_dict.get("legs") or []
+                if not legs:
+                    self.logger.warning(
+                        "[RENKO_ICHIMOKU] DATABASE: ACTIVE Renko trade has no legs; skip orphan close."
+                    )
+                    return
+                leg = legs[0]
+                entry_price = leg.get("entry_price")
+                if entry_price is None:
+                    return
+                leg_type = str(leg.get("leg_type") or "LONG")
+                local_side = 1 if leg_type == "LONG" else -1
+                cfg = trade_dict.get("strategy_config") or {}
+                entry_order_id = cfg.get("entry_order_id")
+                exit_order_id = self.renko_runtime.state.entry_order_id
+                exit_price = None
+                if self.renko_adapter and self.renko_runtime.instrument_id:
+                    close_side = "sell" if local_side > 0 else "buy"
+                    fills = await self.renko_adapter.get_recent_fills_for_product(
+                        instrument_id=str(self.renko_runtime.instrument_id),
+                        side=close_side,
+                        page_size=10,
+                    )
+                    for fill in fills:
+                        oid = str(fill.get("order_id") or "")
+                        if exit_order_id and oid == str(exit_order_id):
+                            try:
+                                exit_price = float(fill.get("price") or 0)
+                            except (TypeError, ValueError):
+                                pass
+                            break
+                    if exit_price is None and fills:
+                        try:
+                            exit_price = float(fills[0].get("price") or 0)
+                        except (TypeError, ValueError):
+                            pass
+                entry_time = (
+                    open_trade.entry_time.timestamp()
+                    if open_trade.entry_time
+                    else None
+                )
+                await self._persist_renko_manual_close_to_db(
+                    local_side=local_side,
+                    entry_order_id=entry_order_id,
+                    exit_order_id=exit_order_id,
+                    exit_price=exit_price,
+                    entry_price=entry_price,
+                    entry_time=entry_time,
+                    trade_id=open_trade.trade_id,
+                    runtime=self.renko_runtime,
+                )
+        except Exception as e:
+            self.logger.warning(
+                f"[RENKO_ICHIMOKU] DATABASE: orphan Renko trade close failed (trading continues): {e}"
             )
 
     def get_readiness(self) -> Dict[str, Any]:

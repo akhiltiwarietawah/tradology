@@ -75,6 +75,7 @@ class FakeExchange:
         self.symbol = symbol
         self.instrument_id = instrument_id
         self.orders_by_cid = {}
+        self.recent_fills: List[dict] = []
 
     async def get_positions(self) -> List[Position]:
         return [
@@ -88,6 +89,18 @@ class FakeExchange:
 
     async def get_order_by_client_id(self, client_order_id: str) -> Optional[Order]:
         return self.orders_by_cid.get(client_order_id)
+
+    async def get_recent_fills_for_product(
+        self,
+        instrument_id: str,
+        side: Optional[str] = None,
+        page_size: int = 10,
+        start_time_us: Optional[int] = None,
+    ) -> List[dict]:
+        fills = list(self.recent_fills)
+        if side:
+            fills = [f for f in fills if str(f.get("side", "")).lower() == side.lower()]
+        return fills
 
 
 @pytest.mark.asyncio
@@ -176,11 +189,18 @@ async def test_mismatch_local_flat_exchange_long_halts(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_mismatch_local_long_exchange_flat_halts(tmp_path):
+async def test_mismatch_local_long_exchange_flat_syncs_on_startup(tmp_path):
     hist = _trend_candles()
     store_path = tmp_path / "mlong.json"
     RenkoIchimokuStateStore(str(store_path), __import__("logging").getLogger("t")).save(
-        RenkoIchimokuState(position=1, instrument_id="42", symbol="ETHUSDT")
+        RenkoIchimokuState(
+            position=1,
+            instrument_id="42",
+            symbol="ETHUSDT",
+            entry_order_id="entry-55",
+            orders_halted=True,
+            halt_reason="Position mismatch local=1 exchange_signed=0.0",
+        )
     )
     src = MemoryCandles(hist)
     exec_a = StubExec("m2")
@@ -199,8 +219,8 @@ async def test_mismatch_local_long_exchange_flat_halts(tmp_path):
         now_fn=lambda: hist[-1].time + 901,
     )
     await rt.start()
-    assert rt.position == 1
-    assert rt.state.orders_halted is True
+    assert rt.position == 0
+    assert rt.state.orders_halted is False
     await rt.on_timer()
     assert exec_a.orders == []
 
@@ -336,13 +356,24 @@ async def test_transient_reconcile_halt_recovers_on_next_success(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_runtime_position_drift_halts_on_timer(tmp_path):
+async def test_runtime_manual_close_syncs_when_exchange_flat(tmp_path):
     hist = _trend_candles()
     exec_a = StubExec("drift")
     fake = FakeExchange(size=1.0)
+    fake.recent_fills = [
+        {"side": "sell", "price": 101.5, "order_id": "exit-99", "created_at": hist[-1].time + 500}
+    ]
     store_path = tmp_path / "drift.json"
     RenkoIchimokuStateStore(str(store_path), __import__("logging").getLogger("t")).save(
-        RenkoIchimokuState(position=1, instrument_id="42", symbol="ETHUSDT")
+        RenkoIchimokuState(
+            position=1,
+            instrument_id="42",
+            symbol="ETHUSDT",
+            entry_order_id="entry-1",
+            active_trade_id="RENKO_TEST_1",
+            entry_price=100.0,
+            entry_time=hist[-1].time,
+        )
     )
     src = MemoryCandles(hist)
     rt = RenkoIchimokuRuntime(
@@ -365,8 +396,47 @@ async def test_runtime_position_drift_halts_on_timer(tmp_path):
     fake.size = 0.0
     rt._last_position_reconcile_ts = 0.0
     await rt.on_timer()
-    assert rt.state.orders_halted is True
+    assert rt.state.orders_halted is False
+    assert rt.position == 0
+    assert rt.state.entry_order_id == "exit-99"
     assert exec_a.orders == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_invalid_persisted_position_syncs_on_startup(tmp_path):
+    hist = _trend_candles()
+    exec_a = StubExec("badpos")
+    fake = FakeExchange(size=0.0)
+    store_path = tmp_path / "badpos.json"
+    RenkoIchimokuStateStore(str(store_path), __import__("logging").getLogger("t")).save(
+        RenkoIchimokuState(
+            position=10,
+            instrument_id="42",
+            symbol="ETHUSDT",
+            entry_order_id="entry-10",
+            orders_halted=True,
+            halt_reason="Position mismatch local=10 exchange_signed=0.0",
+        )
+    )
+    rt = _runtime(tmp_path, exec_a, hist, account="badpos", size=10.0, exchange_ops=fake)
+    await rt.start()
+    assert rt.position == 0
+    assert rt.state.orders_halted is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_opposite_side_still_halts(tmp_path):
+    hist = _trend_candles()
+    exec_a = StubExec("opp")
+    fake = FakeExchange(size=-1.0)
+    store_path = tmp_path / "opp.json"
+    RenkoIchimokuStateStore(str(store_path), __import__("logging").getLogger("t")).save(
+        RenkoIchimokuState(position=1, instrument_id="42", symbol="ETHUSDT")
+    )
+    rt = _runtime(tmp_path, exec_a, hist, account="opp", size=1.0, exchange_ops=fake)
+    await rt.start()
+    assert rt.state.orders_halted is True
+    assert "side mismatch" in (rt.state.halt_reason or "").lower()
 
 
 @pytest.mark.asyncio

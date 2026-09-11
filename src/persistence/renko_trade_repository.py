@@ -150,6 +150,7 @@ class RenkoTradeRepository:
         entry_time: Optional[float] = None,
         quantity: float,
         contract_value: float = 0.01,
+        config_extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         now = datetime.now(timezone.utc)
         leg_type = _leg_type_for_action(action_kind)
@@ -173,8 +174,10 @@ class RenkoTradeRepository:
                 "exit_brick_index": brick.index,
                 "exit_brick_close": brick.close,
                 "exit_signal_reason": action_reason,
+                **(config_extra or {}),
             }
         )
+        exit_reason_col = str(action_reason)[:64]
 
         leg_values = {
             "leg_id": leg_id,
@@ -218,7 +221,7 @@ class RenkoTradeRepository:
             "realized_pnl": realized,
             "total_fees": Decimal("0.0000"),
             "net_pnl": realized,
-            "exit_reason": action_reason,
+            "exit_reason": exit_reason_col,
             "strategy_config": merged_config,
             "created_at": entry_dt,
             "updated_at": now,
