@@ -16,6 +16,7 @@ data/
 backups/
 scratch/
 *.sql
+!migrations/*.sql
 *.sql.gz
 DEPLOYMENT.md
 

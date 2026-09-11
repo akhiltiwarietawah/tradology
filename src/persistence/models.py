@@ -63,10 +63,10 @@ class TradeLegModel(Base):
 
     leg_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     trade_id: Mapped[str] = mapped_column(String(64), ForeignKey("trades.trade_id", ondelete="CASCADE"), nullable=False, index=True)
-    leg_type: Mapped[str] = mapped_column(String(8), nullable=False)  # 'CE' or 'PE'
+    leg_type: Mapped[str] = mapped_column(String(8), nullable=False)  # CE/PE or LONG/SHORT
     symbol: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     product_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    strike: Mapped[Decimal] = mapped_column(Numeric(16, 2), nullable=False)
+    strike: Mapped[Optional[Decimal]] = mapped_column(Numeric(16, 2), nullable=True)
     quantity: Mapped[Decimal] = mapped_column(Numeric(16, 4), nullable=False)
     side: Mapped[str] = mapped_column(String(8), nullable=False, default="sell")
     entry_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(16, 4), nullable=True)

@@ -36,10 +36,43 @@ def create_router(engine) -> APIRouter:
         """Get current trade and archived history."""
         trade = engine.strategy.current_trade
         history = engine.state_store.get_historical_trades()
+        renko_open = None
+        renko_history: list = []
+        if getattr(engine, "renko_trade_repo", None) and engine.db_manager.is_connected:
+            try:
+                open_row = await engine.renko_trade_repo.get_open_trade()
+                if open_row:
+                    renko_open = await engine.renko_trade_repo.trade_to_dict(open_row)
+                rows = await engine.renko_trade_repo.list_trades(limit=100)
+                renko_history = [
+                    await engine.renko_trade_repo.trade_to_dict(r)
+                    for r in rows
+                    if r.status == "COMPLETED"
+                ]
+            except Exception as e:
+                engine.logger.warning(f"Renko DB trade query failed: {e}")
         return {
             "current_trade": trade.to_dict() if trade else None,
             "history_count": len(history),
             "history": [t.to_dict() for t in history],
+            "renko_ichimoku": {
+                "open_trade": renko_open,
+                "completed_count": len(renko_history),
+                "completed": renko_history,
+            },
+        }
+
+    @router.get("/renko/trades", dependencies=[Depends(verify_auth)])
+    async def get_renko_trades(limit: int = 50) -> Dict[str, Any]:
+        """Renko Ichimoku trade history from PostgreSQL."""
+        if not engine.db_manager.is_connected:
+            return {"connected": False, "open_trade": None, "trades": []}
+        open_row = await engine.renko_trade_repo.get_open_trade()
+        rows = await engine.renko_trade_repo.list_trades(limit=min(limit, 200))
+        return {
+            "connected": True,
+            "open_trade": await engine.renko_trade_repo.trade_to_dict(open_row) if open_row else None,
+            "trades": [await engine.renko_trade_repo.trade_to_dict(r) for r in rows],
         }
 
     @router.get("/performance", dependencies=[Depends(verify_auth)])

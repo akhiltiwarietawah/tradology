@@ -104,3 +104,19 @@ If Renko is disabled but the state file still shows an open position, the engine
 **Short in:** confirmed bearish brick close below both cloud boundaries and below Kijun.  
 **Short out:** confirmed brick close at or above Kijun.  
 One position; exit first, then opposite entry on the same confirmed brick if valid.
+
+## Persistence (production)
+
+Renko round-trips are stored in PostgreSQL (same `trades` / `trade_legs` / `orders` / `fills` tables as the strangle):
+
+| Layer | Path / endpoint |
+|---|---|
+| Runtime state (restart) | `RENKO_ICHIMOKU_STATE_FILE` (default `data/renko_ichimoku_state_{testnet\|live}.json`) |
+| Order audit events | `logs/trades.jsonl` (`trade_id=renko_ichimoku`) |
+| PostgreSQL | `strategy_name=renko_ichimoku`, `exchange=delta_india_renko` |
+| API | `GET /api/v1/renko/trades`, `GET /api/v1/trades` (includes `renko_ichimoku` block) |
+| Performance | `GET /api/v1/performance?strategy_name=renko_ichimoku` |
+
+Apply migration `002_renko_perpetual_support.sql` via `python migrations/run_migrations.py`.
+
+On startup, if state shows an open position but DB has no `ACTIVE` row, the engine backfills the entry once (`startup_backfill`).

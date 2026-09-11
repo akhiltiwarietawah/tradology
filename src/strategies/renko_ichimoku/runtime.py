@@ -6,7 +6,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Protocol
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol
 
 from src.core.models.order import Order, OrderRequest, OrderSide, OrderState, OrderType
 from src.core.models.position import Position
@@ -16,8 +16,9 @@ from src.strategies.renko_ichimoku.ichimoku import IncrementalIchimoku
 from src.strategies.renko_ichimoku.params import RENKO_ICHIMOKU_FIXED_PARAMS
 from src.strategies.renko_ichimoku.prefix_logger import PrefixLogger
 from src.strategies.renko_ichimoku.renko import TraditionalRenko, ConfirmedBrick
-from src.strategies.renko_ichimoku.signals import evaluate_confirmed_brick
+from src.strategies.renko_ichimoku.signals import evaluate_confirmed_brick, SignalAction
 from src.strategies.renko_ichimoku.state import RenkoIchimokuState, RenkoIchimokuStateStore
+from src.persistence.renko_trade_repository import make_renko_trade_id
 
 
 RESOLUTION_SECONDS = {
@@ -120,6 +121,8 @@ class RenkoIchimokuRuntime:
         allow_trade_on_warmup: bool = False,
         exchange_ops: Optional[ExchangeOps] = None,
         flatten: bool = False,
+        fill_persister: Optional[Callable[..., Awaitable[None]]] = None,
+        contract_value: float = 0.01,
     ):
         self.account_name = account_name
         self.configured_symbol = symbol
@@ -137,6 +140,8 @@ class RenkoIchimokuRuntime:
         self.now_fn = now_fn
         self.allow_trade_on_warmup = allow_trade_on_warmup
         self.flatten = flatten
+        self.fill_persister = fill_persister
+        self.contract_value = float(contract_value)
         self._last_position_reconcile_ts = 0.0
 
         self.store = RenkoIchimokuStateStore(state_file, self.logger)
@@ -419,6 +424,11 @@ class RenkoIchimokuRuntime:
                 average_fill_price=brick.close,
             )
             self.order_manager.record_order(order)
+            await self._persist_fill(action, order, brick)
+            self._apply_fill(action.kind, order, brick)
+            self._clear_in_flight()
+            self.store.save(self.state)
+            return True
         else:
             try:
                 order = await self.execution_engine.execute_order(req)
@@ -463,10 +473,27 @@ class RenkoIchimokuRuntime:
             )
             return False
 
+        await self._persist_fill(action, order, brick)
         self._apply_fill(action.kind, order, brick)
         self._clear_in_flight()
         self.store.save(self.state)
         return True
+
+    async def _persist_fill(self, action: SignalAction, order: Order, brick: ConfirmedBrick) -> None:
+        if not self.fill_persister:
+            return
+        try:
+            await self.fill_persister(
+                action_kind=action.kind,
+                action_reason=action.reason,
+                order=order,
+                brick=brick,
+                runtime=self,
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"DATABASE: Renko fill persist failed (trading continues): {type(e).__name__}: {e}"
+            )
 
     def _apply_fill(self, action_kind: str, order: Order, brick: ConfirmedBrick) -> None:
         fill_px = order.average_fill_price or brick.close
@@ -474,14 +501,20 @@ class RenkoIchimokuRuntime:
             self.state.position = 0
             self.state.entry_price = None
             self.state.entry_order_id = order.order_id
+            self.state.active_trade_id = None
+            self.state.entry_time = None
         elif action_kind == "enter_long":
             self.state.position = 1
             self.state.entry_price = fill_px
             self.state.entry_order_id = order.order_id
+            self.state.active_trade_id = make_renko_trade_id(brick.index)
+            self.state.entry_time = self.now_fn()
         elif action_kind == "enter_short":
             self.state.position = -1
             self.state.entry_price = fill_px
             self.state.entry_order_id = order.order_id
+            self.state.active_trade_id = make_renko_trade_id(brick.index)
+            self.state.entry_time = self.now_fn()
         self.logger.info(
             f"Fill applied action={action_kind} new_pos={self.state.position} "
             f"fill_px={fill_px} order_id={order.order_id} cid={order.client_order_id}"
@@ -654,6 +687,7 @@ class RenkoIchimokuRuntime:
             "position": self.state.position,
             "entry_price": self.state.entry_price,
             "entry_order_id": self.state.entry_order_id,
+            "active_trade_id": self.state.active_trade_id,
             "bricks": len(self.renko.bricks),
             "last_processed_candle_time": self.state.last_processed_candle_time,
             "instrument_id": self.instrument_id,

@@ -16,6 +16,8 @@ class RenkoIchimokuState:
     position: int = 0  # 1 long, -1 short, 0 flat
     entry_price: Optional[float] = None
     entry_order_id: Optional[str] = None
+    active_trade_id: Optional[str] = None
+    entry_time: Optional[float] = None
     last_processed_candle_time: Optional[float] = None
     last_traded_brick_index: Optional[int] = None
     last_brick_close: Optional[float] = None
@@ -49,6 +51,8 @@ class RenkoIchimokuStateStore:
                 position=int(data.get("position") or 0),
                 entry_price=data.get("entry_price"),
                 entry_order_id=data.get("entry_order_id"),
+                active_trade_id=data.get("active_trade_id"),
+                entry_time=data.get("entry_time"),
                 last_processed_candle_time=data.get("last_processed_candle_time"),
                 last_traded_brick_index=data.get("last_traded_brick_index"),
                 last_brick_close=data.get("last_brick_close"),

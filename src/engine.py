@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
 
@@ -19,6 +20,7 @@ from src.strategies.short_strangle.models import ShortStrangleConfig
 from src.strategies.renko_ichimoku.prefix_logger import PrefixLogger
 from src.strategies.renko_ichimoku.runtime import RenkoIchimokuRuntime
 from src.strategies.renko_ichimoku.delta_bridge import DeltaCandleProductBridge
+from src.strategies.renko_ichimoku.params import RENKO_ICHIMOKU_FIXED_PARAMS
 from src.execution.execution_engine import ExecutionEngine
 from src.execution.order_manager import OrderManager
 from src.risk.risk_manager import RiskManager
@@ -27,6 +29,7 @@ from src.state.persistence import StatePersistence
 from src.state.state_store import StateStore
 from src.persistence.db import DatabaseManager
 from src.persistence.trade_repository import TradeRepository
+from src.persistence.renko_trade_repository import RenkoTradeRepository, make_renko_trade_id
 from src.monitoring.alerts import AlertService, AlertSeverity
 from src.logging_utils.logger import setup_logger, TradeLogger
 
@@ -70,6 +73,7 @@ class TradingEngine:
         # Historical Database Persistence Layer (Optional / Non-blocking)
         self.db_manager = DatabaseManager(settings=self.settings, logger=self.logger)
         self.trade_repo = TradeRepository(db_manager=self.db_manager, logger=self.logger)
+        self.renko_trade_repo = RenkoTradeRepository(db_manager=self.db_manager, logger=self.logger)
 
 
         # Exchange Layer
@@ -208,6 +212,7 @@ class TradingEngine:
             kill_switch=self.settings.kill_switch,
             exchange_ops=self.renko_adapter,
             flatten=self.settings.renko_ichimoku_flatten,
+            fill_persister=self._persist_renko_fill_to_db,
         )
         self.logger.info(
             f"[RENKO_ICHIMOKU] Configured account={self.settings.renko_ichimoku_account} "
@@ -351,6 +356,7 @@ class TradingEngine:
             if self.renko_adapter is not None and self.renko_adapter is not self.delta_adapter:
                 await self.renko_adapter.initialize()
             await self.renko_runtime.start()
+            await self._backfill_renko_db_if_needed()
 
         # 7. Start Scheduler (runs background reconciliation, monitoring, and timer loops)
         await self.scheduler.start()
@@ -843,6 +849,113 @@ class TradingEngine:
         except Exception as e:
             self.logger.warning(
                 f"⚠️ DATABASE: UNAVAILABLE — trading continues using file persistence + exchange reconciliation (Reconciliation sync error: {e})"
+            )
+
+    async def _persist_renko_fill_to_db(self, **kwargs) -> None:
+        """Persist Renko entry/exit lifecycle to PostgreSQL (non-blocking for trading)."""
+        if not self.db_manager.is_connected or not self.renko_runtime:
+            return
+        action_kind = kwargs["action_kind"]
+        action_reason = kwargs["action_reason"]
+        order = kwargs["order"]
+        brick = kwargs["brick"]
+        rt = kwargs["runtime"]
+        config_snapshot = {
+            "box_size": RENKO_ICHIMOKU_FIXED_PARAMS.box_size,
+            "candle_resolution": self.settings.renko_ichimoku_candle_resolution,
+            "position_size": self.settings.renko_ichimoku_position_size,
+        }
+        async with asyncio.timeout(self.settings.db_timeout_seconds):
+            if action_kind in ("enter_long", "enter_short"):
+                trade_id = make_renko_trade_id(brick.index)
+                await self.renko_trade_repo.record_entry(
+                    trade_id=trade_id,
+                    order=order,
+                    brick=brick,
+                    action_kind=action_kind,
+                    action_reason=action_reason,
+                    account_name=rt.account_name,
+                    symbol=rt.symbol,
+                    product_id=str(rt.instrument_id),
+                    quantity=rt.position_size,
+                    config_snapshot=config_snapshot,
+                )
+                self.logger.info(f"[RENKO_ICHIMOKU] DATABASE: persisted entry trade_id={trade_id}")
+            elif action_kind in ("exit_long", "exit_short"):
+                trade_id = rt.state.active_trade_id or make_renko_trade_id(
+                    rt.state.last_traded_brick_index or brick.index
+                )
+                await self.renko_trade_repo.record_exit(
+                    trade_id=trade_id,
+                    order=order,
+                    brick=brick,
+                    action_kind=action_kind,
+                    action_reason=action_reason,
+                    entry_price=float(rt.state.entry_price or order.average_fill_price or brick.close),
+                    entry_time=rt.state.entry_time,
+                    quantity=rt.position_size,
+                )
+                self.logger.info(f"[RENKO_ICHIMOKU] DATABASE: persisted exit trade_id={trade_id}")
+        self.last_db_operation_time = datetime.now(timezone.utc)
+
+    async def _backfill_renko_db_if_needed(self) -> None:
+        """If Renko has an open position in state but no ACTIVE DB row, backfill entry."""
+        if not self.renko_runtime or not self.db_manager.is_connected:
+            return
+        st = self.renko_runtime.state
+        if st.position == 0:
+            return
+        try:
+            async with asyncio.timeout(self.settings.db_timeout_seconds):
+                open_trade = await self.renko_trade_repo.get_open_trade()
+                if open_trade:
+                    if not st.active_trade_id:
+                        st.active_trade_id = open_trade.trade_id
+                        self.renko_runtime.store.save(st)
+                    return
+                brick_index = st.last_traded_brick_index or 0
+                trade_id = st.active_trade_id or make_renko_trade_id(brick_index)
+                if not st.entry_price:
+                    self.logger.warning(
+                        "[RENKO_ICHIMOKU] DATABASE: open position in state without entry_price; skip backfill."
+                    )
+                    return
+                from src.core.models.order import Order, OrderSide, OrderState, OrderType
+
+                action_kind = "enter_long" if st.position > 0 else "enter_short"
+                synth_brick = type("B", (), {"index": brick_index, "close": st.last_brick_close or st.entry_price})()
+                synth_order = Order(
+                    order_id=str(st.entry_order_id or f"backfill-{trade_id}"),
+                    client_order_id=f"RI{brick_index}EL" if st.position > 0 else f"RI{brick_index}ES",
+                    instrument_id=str(st.instrument_id or self.renko_runtime.instrument_id),
+                    symbol=st.resolved_symbol or self.renko_runtime.symbol,
+                    side=OrderSide.BUY if st.position > 0 else OrderSide.SELL,
+                    order_type=OrderType.MARKET,
+                    quantity=self.settings.renko_ichimoku_position_size,
+                    filled_quantity=self.settings.renko_ichimoku_position_size,
+                    average_fill_price=st.entry_price,
+                    state=OrderState.FILLED,
+                    strategy_id="renko_ichimoku",
+                )
+                await self.renko_trade_repo.record_entry(
+                    trade_id=trade_id,
+                    order=synth_order,
+                    brick=synth_brick,
+                    action_kind=action_kind,
+                    action_reason="startup_backfill",
+                    account_name=self.settings.renko_ichimoku_account,
+                    symbol=self.renko_runtime.symbol,
+                    product_id=str(self.renko_runtime.instrument_id),
+                    quantity=self.settings.renko_ichimoku_position_size,
+                )
+                st.active_trade_id = trade_id
+                if not st.entry_time:
+                    st.entry_time = time.time()
+                self.renko_runtime.store.save(st)
+                self.logger.info(f"[RENKO_ICHIMOKU] DATABASE: backfilled open entry trade_id={trade_id}")
+        except Exception as e:
+            self.logger.warning(
+                f"[RENKO_ICHIMOKU] DATABASE: open-position backfill failed (trading continues): {e}"
             )
 
     def get_readiness(self) -> Dict[str, Any]:
