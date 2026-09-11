@@ -19,9 +19,10 @@ import type { PerformanceMetricsResponse } from "@/lib/api/schemas";
 interface PerformanceOverviewProps {
   metrics?: PerformanceMetricsResponse | null;
   isLoading?: boolean;
+  title?: string;
 }
 
-export function PerformanceOverview({ metrics, isLoading }: PerformanceOverviewProps) {
+export function PerformanceOverview({ metrics, isLoading, title = "Performance Overview" }: PerformanceOverviewProps) {
   if (isLoading) {
     return (
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
@@ -56,7 +57,11 @@ export function PerformanceOverview({ metrics, isLoading }: PerformanceOverviewP
   const todayNetPnl = todayEntry ? todayEntry.net_pnl : 0;
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
+    <div className="space-y-3">
+      <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground px-1">
+        {title}
+      </h2>
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-3">
       {/* 1. Today's P&L */}
       <Card className="bg-card/60 border-border/80 hover:border-border transition-colors">
         <CardContent className="p-3.5 flex flex-col justify-between h-full">
@@ -186,6 +191,7 @@ export function PerformanceOverview({ metrics, isLoading }: PerformanceOverviewP
           </div>
         </CardContent>
       </Card>
+    </div>
     </div>
   );
 }

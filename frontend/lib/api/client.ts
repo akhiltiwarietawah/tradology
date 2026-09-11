@@ -3,10 +3,12 @@ import {
   ReadinessResponseSchema,
   SystemStatusSchema,
   PerformanceMetricsSchema,
+  RenkoTradesResponseSchema,
   type HealthResponse,
   type ReadinessResponse,
   type SystemStatusResponse,
   type PerformanceMetricsResponse,
+  type RenkoTradesResponse,
 } from "./schemas";
 
 export class ApiClientError extends Error {
@@ -248,7 +250,19 @@ export class ApiClient {
       return data as PerformanceMetricsResponse;
     }
     return parsed.data;
+  }
 
+  /**
+   * Get Renko Ichimoku trade history from PostgreSQL
+   */
+  async getRenkoTrades(limit: number = 50): Promise<RenkoTradesResponse> {
+    const data = await this.request<any>(`/api/v1/renko/trades?limit=${limit}`);
+    const parsed = RenkoTradesResponseSchema.safeParse(data);
+    if (!parsed.success) {
+      console.warn("[ApiClient] /api/v1/renko/trades schema validation warning:", parsed.error);
+      return data as RenkoTradesResponse;
+    }
+    return parsed.data;
   }
 }
 

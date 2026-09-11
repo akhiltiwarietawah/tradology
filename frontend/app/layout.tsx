@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { QueryProvider } from "@/components/providers/query-provider";
-import { Header } from "@/components/layout/header";
+import { SessionProviderWrapper } from "@/components/providers/session-provider";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -15,8 +15,9 @@ const mono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Delta Quant Dashboard | BTC 0DTE Options",
-  description: "Production quantitative trading dashboard and real-time risk monitor for Delta Exchange India",
+  title: "Tradology | Quant Trading Dashboard",
+  description:
+    "Production quantitative trading dashboard for Delta Exchange India — BTC strangle, Renko Ichimoku, and live risk monitoring",
 };
 
 export default function RootLayout({
@@ -26,13 +27,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="dark">
-      <body className={`${inter.variable} ${mono.variable} font-sans bg-background text-foreground min-h-screen flex flex-col antialiased`}>
-        <QueryProvider>
-          <Header />
-          <main className="flex-1 w-full max-w-7xl mx-auto p-4 sm:p-6 lg:p-8">
-            {children}
-          </main>
-        </QueryProvider>
+      <body
+        className={`${inter.variable} ${mono.variable} font-sans bg-background text-foreground min-h-screen flex flex-col antialiased`}
+      >
+        <SessionProviderWrapper>
+          <QueryProvider>{children}</QueryProvider>
+        </SessionProviderWrapper>
       </body>
     </html>
   );

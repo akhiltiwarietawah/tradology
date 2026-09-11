@@ -67,6 +67,58 @@ export const AlertItemSchema = z.object({
   trade_id: z.string().optional(),
 });
 
+export const RenkoSnapshotSchema = z.object({
+  enabled: z.boolean().optional(),
+  account: z.string().optional(),
+  symbol: z.string().optional(),
+  configured_symbol: z.string().optional(),
+  position: z.number().optional(),
+  entry_price: z.number().nullable().optional(),
+  entry_order_id: z.union([z.string(), z.number()]).nullable().optional(),
+  active_trade_id: z.string().nullable().optional(),
+  bricks: z.number().optional(),
+  last_processed_candle_time: z.string().nullable().optional(),
+  instrument_id: z.number().nullable().optional(),
+  position_size: z.number().optional(),
+  orders_halted: z.boolean().optional(),
+  halt_reason: z.string().nullable().optional(),
+  in_flight_client_order_id: z.string().nullable().optional(),
+}).nullable();
+
+export const RenkoTradeLegSchema = z.object({
+  leg_id: z.string().optional(),
+  leg_type: z.string().optional(),
+  symbol: z.string().optional(),
+  side: z.string().optional(),
+  quantity: z.number().optional(),
+  entry_price: z.number().nullable().optional(),
+  exit_price: z.number().nullable().optional(),
+  realized_pnl: z.number().optional(),
+  status: z.string().optional(),
+});
+
+export const RenkoTradeRecordSchema = z.object({
+  trade_id: z.string(),
+  strategy_name: z.string().optional(),
+  exchange: z.string().optional(),
+  trade_date: z.string().optional(),
+  status: z.string(),
+  entry_time: z.string().nullable().optional(),
+  exit_time: z.string().nullable().optional(),
+  realized_pnl: z.number().optional(),
+  net_pnl: z.number().optional(),
+  total_fees: z.number().optional(),
+  exit_reason: z.string().nullable().optional(),
+  strategy_config: z.record(z.any()).optional(),
+  legs: z.array(RenkoTradeLegSchema).default([]),
+});
+
+export const RenkoTradesResponseSchema = z.object({
+  connected: z.boolean().default(false),
+  open_trade: RenkoTradeRecordSchema.nullable().optional(),
+  trades: z.array(RenkoTradeRecordSchema).default([]),
+});
+
 // Comprehensive System Status Schema
 export const SystemStatusSchema = z.object({
   engine: z.object({
@@ -102,6 +154,19 @@ export const SystemStatusSchema = z.object({
     last_loop: z.string().nullable().optional(),
   }),
   current_trade: CurrentTradeSchema.optional(),
+  strategies: z
+    .object({
+      existing: z
+        .object({
+          name: z.string().optional(),
+          enabled: z.boolean().optional(),
+          account: z.string().optional(),
+          active: z.boolean().optional(),
+        })
+        .optional(),
+      renko_ichimoku: RenkoSnapshotSchema.optional(),
+    })
+    .optional(),
   alerts: z.object({
     recent_count: z.number().default(0),
     recent_alerts: z.array(AlertItemSchema).default([]),
@@ -180,6 +245,9 @@ export const PerformanceMetricsSchema = z.object({
 });
 
 // Infer TypeScript types from Zod
+export type RenkoSnapshot = z.infer<typeof RenkoSnapshotSchema>;
+export type RenkoTradeRecord = z.infer<typeof RenkoTradeRecordSchema>;
+export type RenkoTradesResponse = z.infer<typeof RenkoTradesResponseSchema>;
 export type HealthResponse = z.infer<typeof HealthResponseSchema>;
 export type ReadinessResponse = z.infer<typeof ReadinessResponseSchema>;
 export type SystemStatusResponse = z.infer<typeof SystemStatusSchema>;

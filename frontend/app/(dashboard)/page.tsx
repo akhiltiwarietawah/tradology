@@ -1,19 +1,15 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import {
-  Activity,
-  ShieldCheck,
-  ShieldAlert,
-  Server,
   Database,
-  Radio,
   Lock,
+  Radio,
   RefreshCw,
-  Clock,
 } from "lucide-react";
 import { useSystemStatus } from "@/hooks/useSystemStatus";
 import { usePerformanceMetrics } from "@/hooks/usePerformanceMetrics";
+import { useRenkoTrades } from "@/hooks/useRenkoTrades";
 import { ApiErrorBanner } from "@/components/ui/api-error-banner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,10 +20,16 @@ import {
   PnlCharts,
   TradeHistory,
   SystemHealth,
+  RenkoPanel,
+  RenkoTradeHistory,
+  StrategyTabs,
+  type StrategyTab,
 } from "@/components/dashboard";
 import { formatDateTime } from "@/lib/utils";
 
 export default function DashboardPage() {
+  const [activeTab, setActiveTab] = useState<StrategyTab>("overview");
+
   const {
     statusData,
     isLoading: isStatusLoading,
@@ -43,15 +45,33 @@ export default function DashboardPage() {
     isDbConnected,
   } = useSystemStatus();
 
+  const strangleMetrics = usePerformanceMetrics({ strategy_name: "short_strangle" });
+  const renkoMetrics = usePerformanceMetrics({ strategy_name: "renko_ichimoku" });
+
   const {
-    metrics,
-    isLoading: isMetricsLoading,
-    refetch: refetchMetrics,
-  } = usePerformanceMetrics();
+    trades: renkoTrades,
+    openTrade: renkoOpenTrade,
+    dbConnected: renkoDbConnected,
+    isLoading: isRenkoLoading,
+    refetch: refetchRenko,
+  } = useRenkoTrades();
+
+  const renkoSnapshot = statusData?.strategies?.renko_ichimoku;
+  const renkoEnabled = !!renkoSnapshot?.enabled;
+
+  const showStrangle = activeTab === "overview" || activeTab === "strangle";
+  const showRenko = activeTab === "overview" || activeTab === "renko";
+
+  const activeMetrics =
+    activeTab === "renko"
+      ? renkoMetrics
+      : strangleMetrics;
 
   const handleRefreshAll = () => {
     refetchStatus();
-    refetchMetrics();
+    strangleMetrics.refetch();
+    renkoMetrics.refetch();
+    refetchRenko();
   };
 
   const engineStatus = statusData?.engine?.status || "STOPPED";
@@ -61,23 +81,40 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-5 pb-10">
-      {/* 1. API Connection / Disconnected Error Banner */}
       {isStatusError && (
         <ApiErrorBanner
           title={isNetworkError ? "FastAPI Trading Backend Offline" : "API Communication Error"}
           message={
             statusError?.message ||
-            "Unable to connect to the trading engine on http://localhost:8000. Real-time updates paused."
+            "Unable to connect to the trading engine. Real-time updates paused."
           }
           isNetworkError={isNetworkError}
           onRetry={handleRefreshAll}
         />
       )}
 
-      {/* 2. Top System Status Bar */}
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+        <StrategyTabs
+          activeTab={activeTab}
+          onChange={setActiveTab}
+          renkoEnabled={renkoEnabled}
+        />
+
+        <div className="flex items-center gap-2 self-end xl:self-auto">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleRefreshAll}
+            className="h-8 text-[11px] px-3 border-border/60"
+          >
+            <RefreshCw className="h-3 w-3 mr-1.5" />
+            Refresh
+          </Button>
+        </div>
+      </div>
+
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-card/70 border border-border/80 rounded-lg p-3 px-4 shadow-sm">
         <div className="flex flex-wrap items-center gap-2">
-          {/* Engine Status Badge */}
           <Badge
             variant={isSafeHalt ? "destructive" : isRunning ? "success" : "secondary"}
             className="text-xs px-2.5 py-1 font-mono font-bold"
@@ -94,7 +131,6 @@ export default function DashboardPage() {
             ENGINE {engineStatus}
           </Badge>
 
-          {/* Environment */}
           <Badge
             variant={environment === "LIVE" ? "destructive" : "cyan"}
             className="text-[11px] font-mono px-2 py-0.5"
@@ -102,12 +138,10 @@ export default function DashboardPage() {
             {environment} • {dryRun ? "DRY RUN" : "LIVE ORDERS"}
           </Badge>
 
-          {/* Strategy */}
-          <Badge variant="outline" className="text-[11px] font-mono border-border/80 text-foreground">
-            STRATEGY: {statusData?.engine?.strategy_name?.toUpperCase() || "SHORT_STRANGLE"}
+          <Badge variant="outline" className="text-[11px] font-mono border-border/80">
+            {activeTab === "renko" ? "RENKO ICHIMOKU" : activeTab === "strangle" ? "BTC STRANGLE" : "MULTI-STRATEGY"}
           </Badge>
 
-          {/* Exchange Connection */}
           <Badge
             variant={isExchangeConnected ? "success" : "destructive"}
             className="text-[11px] font-mono px-2 py-0.5"
@@ -116,91 +150,80 @@ export default function DashboardPage() {
             DELTA: {isExchangeConnected ? (isWsStale ? "REST FALLBACK" : "CONNECTED") : "OFFLINE"}
           </Badge>
 
-          {/* Reconciliation */}
-          <Badge
-            variant={isSynchronized ? "success" : "warning"}
-            className="text-[11px] font-mono px-2 py-0.5"
-          >
+          <Badge variant={isSynchronized ? "success" : "warning"} className="text-[11px] font-mono px-2 py-0.5">
             {isSynchronized ? "SYNCED" : "UNSYNCHRONIZED"}
           </Badge>
 
-          {/* Database */}
-          <Badge
-            variant={isDbConnected ? "info" : "secondary"}
-            className="text-[11px] font-mono px-2 py-0.5"
-          >
+          <Badge variant={isDbConnected ? "info" : "secondary"} className="text-[11px] font-mono px-2 py-0.5">
             <Database className="h-3 w-3 mr-1" />
             POSTGRES: {isDbConnected ? "ONLINE" : "FALLBACK"}
           </Badge>
 
-          {/* Kill Switch */}
           {killSwitch && (
             <Badge variant="destructive" className="text-[11px] font-mono px-2 py-0.5">
               <Lock className="h-3 w-3 mr-1" />
-              KILL SWITCH ENGAGED
+              KILL SWITCH
             </Badge>
           )}
         </div>
 
-        {/* Action / Refresh */}
-        <div className="flex items-center gap-3 self-end lg:self-auto">
-          <div className="text-[11px] font-mono text-muted-foreground hidden sm:block">
-            Last Sync: {statusData?.reconciliation?.last_reconciliation_time ? formatDateTime(statusData.reconciliation.last_reconciliation_time) : "--"}
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleRefreshAll}
-            className="h-7 text-[11px] px-2.5 border-border/60 hover:bg-secondary/40"
-          >
-            <RefreshCw className="h-3 w-3 mr-1.5" />
-            Refresh
-          </Button>
+        <div className="text-[11px] font-mono text-muted-foreground">
+          Last Sync:{" "}
+          {statusData?.reconciliation?.last_reconciliation_time
+            ? formatDateTime(statusData.reconciliation.last_reconciliation_time)
+            : "--"}
         </div>
       </div>
 
-      {/* 3. Performance KPI Overview Cards */}
       <PerformanceOverview
-        metrics={metrics}
-        isLoading={isMetricsLoading}
+        metrics={activeMetrics.metrics}
+        isLoading={activeMetrics.isLoading}
+        title={
+          activeTab === "renko"
+            ? "Renko Performance"
+            : activeTab === "strangle"
+            ? "Strangle Performance"
+            : "Portfolio Performance (Strangle)"
+        }
       />
 
-      {/* 4. Active Trade Monitor (High-visibility position tracking) */}
-      <ActiveTrade
-        status={statusData}
-        isLoading={isStatusLoading}
-      />
+      {showStrangle && (
+        <ActiveTrade status={statusData} isLoading={isStatusLoading} />
+      )}
 
-      {/* 5. Main Middle Grid: Risk/Safety Panel & PnL Analytics */}
+      {showRenko && (
+        <RenkoPanel snapshot={renkoSnapshot} isLoading={isStatusLoading} />
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* Risk & Safety Panel (5 Cols) */}
         <div className="lg:col-span-5">
-          <RiskSafety
-            status={statusData}
-            isLoading={isStatusLoading}
-          />
+          <RiskSafety status={statusData} isLoading={isStatusLoading} />
         </div>
-
-        {/* P&L & Equity Charts (7 Cols) */}
         <div className="lg:col-span-7">
           <PnlCharts
-            metrics={metrics}
-            isLoading={isMetricsLoading}
+            metrics={activeMetrics.metrics}
+            isLoading={activeMetrics.isLoading}
           />
         </div>
       </div>
 
-      {/* 6. Executed Trade History Table */}
-      <TradeHistory
-        trades={metrics?.cumulative_pnl_curve || []}
-        isLoading={isMetricsLoading}
-      />
+      {(activeTab === "overview" || activeTab === "strangle") && (
+        <TradeHistory
+          trades={strangleMetrics.metrics?.cumulative_pnl_curve || []}
+          isLoading={strangleMetrics.isLoading}
+        />
+      )}
 
-      {/* 7. Connectivity & Watchdog Details */}
-      <SystemHealth
-        status={statusData}
-        isLoading={isStatusLoading}
-      />
+      {showRenko && (
+        <RenkoTradeHistory
+          trades={renkoTrades}
+          openTrade={renkoOpenTrade}
+          isLoading={isRenkoLoading}
+          dbConnected={renkoDbConnected}
+        />
+      )}
+
+      <SystemHealth status={statusData} isLoading={isStatusLoading} />
     </div>
   );
 }

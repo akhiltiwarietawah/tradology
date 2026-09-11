@@ -4,3 +4,6 @@ export * from "./risk-safety";
 export * from "./pnl-charts";
 export * from "./trade-history";
 export * from "./system-health";
+export * from "./renko-panel";
+export * from "./renko-trade-history";
+export * from "./strategy-tabs";
