@@ -301,6 +301,41 @@ async def test_candle_fetch_error_skips_orders(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_transient_reconcile_halt_recovers_on_next_success(tmp_path):
+    hist = _trend_candles()
+    exec_a = StubExec("recover")
+    fake = FakeExchange(size=0.0)
+    store_path = tmp_path / "recover.json"
+    RenkoIchimokuStateStore(str(store_path), __import__("logging").getLogger("t")).save(
+        RenkoIchimokuState(
+            position=0,
+            instrument_id="42",
+            symbol="ETHUSDT",
+            orders_halted=True,
+            halt_reason="Could not read exchange positions for reconcile. Trading halted.",
+        )
+    )
+    src = MemoryCandles(hist)
+    rt = RenkoIchimokuRuntime(
+        account_name="recover",
+        symbol="ETHUSDT",
+        position_size=1.0,
+        candle_resolution="15m",
+        state_file=str(store_path),
+        execution_engine=exec_a,
+        order_manager=OrderManager(),
+        candle_source=src,
+        product_source=src,
+        logger=__import__("logging").getLogger("recover"),
+        exchange_ops=fake,
+        now_fn=lambda: hist[-1].time + 901,
+    )
+    await rt.start()
+    assert rt.state.orders_halted is False
+    assert rt._trading_unlocked is True
+
+
+@pytest.mark.asyncio
 async def test_runtime_position_drift_halts_on_timer(tmp_path):
     hist = _trend_candles()
     exec_a = StubExec("drift")

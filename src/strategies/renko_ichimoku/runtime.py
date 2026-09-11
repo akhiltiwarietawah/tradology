@@ -92,6 +92,9 @@ def deterministic_client_order_id(brick_index: int, action_kind: str) -> str:
 
 
 POSITION_RECONCILE_INTERVAL_SECONDS = 30.0
+TRANSIENT_RECONCILE_HALT_REASON = (
+    "Could not read exchange positions for reconcile. Trading halted."
+)
 
 
 class RenkoIchimokuRuntime:
@@ -157,6 +160,20 @@ class RenkoIchimokuRuntime:
         self.state.halt_reason = reason
         self._trading_unlocked = False
         self.logger.critical(f"ORDERS HALTED: {reason}")
+        self.store.save(self.state)
+
+    def _clear_transient_reconcile_halt(self) -> None:
+        """Resume after a transient API/network reconcile failure once positions read OK."""
+        if not self.state.orders_halted:
+            return
+        if self.state.halt_reason != TRANSIENT_RECONCILE_HALT_REASON:
+            return
+        self.state.orders_halted = False
+        self.state.halt_reason = None
+        self._trading_unlocked = True
+        self.logger.info(
+            "Exchange position reconcile recovered after transient failure. Renko trading resumed."
+        )
         self.store.save(self.state)
 
     async def start(self) -> None:
@@ -541,7 +558,7 @@ class RenkoIchimokuRuntime:
             return
         signed = await self._exchange_signed_size()
         if signed is None:
-            self._halt("Could not read exchange positions for reconcile. Trading halted.")
+            self._halt(TRANSIENT_RECONCILE_HALT_REASON)
             return
         ex_side = local_side_from_exchange(signed)
         local = self.state.position
@@ -550,12 +567,15 @@ class RenkoIchimokuRuntime:
             f"symbol={self.symbol} instrument_id={self.instrument_id} account={self.account_name}"
         )
         if local == 0 and ex_side == 0:
+            self._clear_transient_reconcile_halt()
             return
         if local != 0 and ex_side == local:
             if self.position_size > 0 and abs(abs(signed) - self.position_size) > 1e-6:
                 self._halt(
                     f"Exchange size {signed} does not match RENKO_ICHIMOKU_POSITION_SIZE={self.position_size}."
                 )
+                return
+            self._clear_transient_reconcile_halt()
             return
         self._halt(
             f"Position mismatch local={local} exchange_signed={signed} ({self.symbol}). "
