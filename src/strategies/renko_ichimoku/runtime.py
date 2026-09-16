@@ -788,7 +788,7 @@ class RenkoIchimokuRuntime:
 
     async def _reconcile_exchange_position(self) -> None:
         if self.dry_run or not self.exchange_ops:
-            self.logger.info("Skipping exchange position reconcile (dry_run or no exchange_ops).")
+            self.logger.debug("Skipping exchange position reconcile (dry_run or no exchange_ops).")
             return
         signed = await self._exchange_signed_size()
         if signed is None:
@@ -802,11 +802,6 @@ class RenkoIchimokuRuntime:
                 f"Normalized invalid persisted position={local} to side={local_side}. "
                 "position in state must be -1, 0, or 1 (direction only)."
             )
-        self.logger.info(
-            f"Reconcile local_pos={local} local_side={local_side} exchange_signed_size={signed} "
-            f"symbol={self.symbol} instrument_id={self.instrument_id} account={self.account_name} "
-            f"entry_order_id={self.state.entry_order_id}"
-        )
         if local_side == 0 and ex_side == 0:
             self._clear_reconcile_halt()
             return
