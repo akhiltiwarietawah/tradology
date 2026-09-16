@@ -8,6 +8,8 @@ from src.strategies.renko_ichimoku.position_sizing import (
     apply_exit_to_sizing_equity,
     compute_realized_pnl_usd,
     contracts_from_sizing_equity,
+    effective_equity_for_entry,
+    margin_usd_from_equity,
 )
 
 
@@ -28,6 +30,24 @@ def test_contracts_from_100_usd_account_25pct_10x():
     # $100 equity -> $25 margin -> $250 notional; ETH $3000, cv=0.01 -> $30/contract -> 8
     qty = contracts_from_sizing_equity(100.0, 0.25, 10.0, 3000.0, 0.01)
     assert qty == 8
+
+
+def test_effective_equity_caps_virtual_by_account():
+    assert effective_equity_for_entry(50.0, 100.0) == 50.0
+    assert effective_equity_for_entry(0.0, 50.0) == 50.0
+    assert effective_equity_for_entry(80.0, None) == 80.0
+
+
+def test_margin_per_trade_25pct_of_50_account():
+    margin, notional = margin_usd_from_equity(50.0, 0.25, 10.0)
+    assert margin == pytest.approx(12.5)
+    assert notional == pytest.approx(125.0)
+
+
+def test_sol_contract_value_one_needs_more_notional():
+    # SOL ~$140, cv=1 -> 1 contract = $140 notional; $125 notional -> 0 contracts
+    qty = contracts_from_sizing_equity(50.0, 0.25, 10.0, 140.0, 1.0)
+    assert qty == 0
 
 
 @pytest.mark.asyncio
@@ -58,12 +78,25 @@ async def test_runtime_dynamic_sizing_updates_equity_on_exit(tmp_path):
         profit_retain_pct=0.5,
         contract_value=0.01,
     )
+    class _FakeOps:
+        async def get_account_balances(self):
+            class USD:
+                available_balance = 100.0
+
+            class AB:
+                balances = {"USD": USD()}
+
+            return AB()
+
+    rt.exchange_ops = _FakeOps()
+
     await rt.start()
     assert rt.state.sizing_equity == pytest.approx(100.0)
 
-    entry_qty = rt._quantity_for_action("enter_long", __import__(
+    brick = __import__(
         "src.strategies.renko_ichimoku.renko", fromlist=["ConfirmedBrick"]
-    ).ConfirmedBrick(1, 0, 0, 0, 0, 3000.0, 1, 0))
+    ).ConfirmedBrick(1, 0, 0, 0, 0, 3000.0, 1, 0)
+    entry_qty = await rt._quantity_for_action("enter_long", brick)
     assert entry_qty == 8.0
 
     rt.state.position = 1

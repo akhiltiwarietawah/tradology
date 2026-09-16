@@ -18,7 +18,9 @@ from src.strategies.renko_ichimoku.position_sizing import (
     apply_exit_to_sizing_equity,
     compute_realized_pnl_usd,
     contracts_from_sizing_equity,
+    effective_equity_for_entry,
     is_valid_sizing_mode,
+    margin_usd_from_equity,
 )
 from src.strategies.renko_ichimoku.prefix_logger import PrefixLogger
 from src.strategies.renko_ichimoku.renko import TraditionalRenko, ConfirmedBrick
@@ -77,6 +79,9 @@ class ExchangeOps(Protocol):
         page_size: int = 10,
         start_time_us: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
+        ...
+
+    async def get_account_balances(self) -> Any:
         ...
 
 
@@ -219,7 +224,24 @@ class RenkoIchimokuRuntime:
             return float(self.state.open_quantity)
         return float(self.position_size)
 
-    def _ensure_sizing_equity_initialized(self) -> None:
+    async def _fetch_available_balance_usd(self) -> float:
+        """Live USD available balance from the Renko exchange account."""
+        if not self.exchange_ops:
+            return 0.0
+        getter = getattr(self.exchange_ops, "get_account_balances", None)
+        if not callable(getter):
+            return 0.0
+        try:
+            balances = await getter()
+            usd = (balances.balances or {}).get("USD")
+            if usd is not None:
+                return max(0.0, float(usd.available_balance or 0.0))
+        except Exception as e:
+            self.logger.warning(f"Could not fetch account balance for sizing: {e}")
+        return 0.0
+
+    async def _sync_sizing_equity_from_account(self) -> None:
+        """Initialize virtual sizing equity from SIZING_BASE_USD when not already in state."""
         if not self.is_dynamic_sizing:
             return
         if self.state.sizing_equity is None or self.state.sizing_equity <= 0:
@@ -229,7 +251,7 @@ class RenkoIchimokuRuntime:
                 f"(RENKO_ICHIMOKU_SIZING_BASE_USD)."
             )
 
-    def _quantity_for_action(self, action_kind: str, brick: ConfirmedBrick) -> float:
+    async def _quantity_for_action(self, action_kind: str, brick: ConfirmedBrick) -> float:
         if action_kind in ("exit_long", "exit_short"):
             qty = self._expected_open_quantity()
             if qty <= 0:
@@ -237,8 +259,12 @@ class RenkoIchimokuRuntime:
             return qty
         if not self.is_dynamic_sizing:
             return float(self.position_size)
-        self._ensure_sizing_equity_initialized()
-        equity = float(self.state.sizing_equity or 0.0)
+
+        account_balance = await self._fetch_available_balance_usd()
+        if self.state.sizing_equity is None or self.state.sizing_equity <= 0:
+            self.state.sizing_equity = self.sizing_base_usd
+
+        equity = effective_equity_for_entry(account_balance, self.state.sizing_equity)
         mark = float(brick.close)
         contracts = contracts_from_sizing_equity(
             equity,
@@ -246,6 +272,13 @@ class RenkoIchimokuRuntime:
             self.leverage,
             mark,
             self.contract_value,
+        )
+        margin, notional = margin_usd_from_equity(equity, self.margin_pct, self.leverage)
+        self.logger.info(
+            f"Dynamic sizing entry: account=${account_balance:.2f} virtual=${float(self.state.sizing_equity or 0):.2f} "
+            f"effective=${equity:.2f} margin=${margin:.2f} ({self.margin_pct:.0%}) "
+            f"notional=${notional:.2f} ({self.leverage:.0f}x) "
+            f"price=${mark:.2f} contract_value={self.contract_value} -> {contracts} contracts"
         )
         return float(contracts)
 
@@ -313,7 +346,7 @@ class RenkoIchimokuRuntime:
             if self.leverage <= 0:
                 self._halt(f"RENKO_ICHIMOKU_LEVERAGE must be > 0, got {self.leverage}.")
                 return
-            self._ensure_sizing_equity_initialized()
+            await self._sync_sizing_equity_from_account()
         else:
             if self.position_size < 0:
                 self._halt(f"RENKO_ICHIMOKU_POSITION_SIZE is negative ({self.position_size}).")
@@ -349,11 +382,21 @@ class RenkoIchimokuRuntime:
         if not self.instrument_id:
             self._halt("Resolved perpetual is missing instrument_id.")
             return
+        raw = product.get("raw") or {}
+        cv = raw.get("contract_value")
+        if cv is not None:
+            try:
+                parsed_cv = float(cv)
+                if parsed_cv > 0:
+                    self.contract_value = parsed_cv
+            except (TypeError, ValueError):
+                pass
         self.state.instrument_id = self.instrument_id
         self.state.resolved_symbol = resolved_symbol
         sizing_note = (
-            f"dynamic equity=${self.state.sizing_equity:.2f} margin_pct={self.margin_pct} "
-            f"leverage={self.leverage}x retain={self.profit_retain_pct}"
+            f"dynamic account-based equity=${float(self.state.sizing_equity or 0):.2f} "
+            f"margin_pct={self.margin_pct} leverage={self.leverage}x retain={self.profit_retain_pct} "
+            f"contract_value={self.contract_value}"
             if self.is_dynamic_sizing
             else f"fixed_size={self.position_size}"
         )
@@ -490,11 +533,12 @@ class RenkoIchimokuRuntime:
         if self.kill_switch and not str(action.kind).startswith("exit"):
             self.logger.warning("Kill switch set. Skipping new entry.")
             return True
-        order_qty = self._quantity_for_action(action.kind, brick)
+        order_qty = await self._quantity_for_action(action.kind, brick)
         if order_qty <= 0:
             if self.is_dynamic_sizing:
                 self.logger.warning(
-                    f"Dynamic sizing computed 0 contracts (sizing_equity={self.state.sizing_equity}). "
+                    f"Dynamic sizing computed 0 contracts "
+                    f"(virtual_equity={self.state.sizing_equity}, contract_value={self.contract_value}). "
                     "Signal logged, no order sent."
                 )
             else:

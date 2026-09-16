@@ -42,6 +42,33 @@ def apply_exit_to_sizing_equity(
     return float(sizing_equity) + realized_pnl
 
 
+def effective_equity_for_entry(account_balance_usd: float, virtual_equity: float | None) -> float:
+    """
+    Entry sizing base: live wallet available balance, capped by virtual equity when set.
+
+    Virtual equity tracks simulated 50% profit withdrawals after closed trades; it cannot
+    size above what the exchange account can actually support.
+    """
+    acct = max(0.0, float(account_balance_usd))
+    virtual = (
+        float(virtual_equity)
+        if virtual_equity is not None and float(virtual_equity) > 0
+        else None
+    )
+    if acct > 0 and virtual is not None:
+        return min(acct, virtual)
+    if acct > 0:
+        return acct
+    return virtual or 0.0
+
+
+def margin_usd_from_equity(equity_usd: float, margin_pct: float, leverage: float) -> tuple[float, float]:
+    """Return (margin_usd, notional_usd) for one entry."""
+    margin = float(equity_usd) * float(margin_pct)
+    notional = margin * float(leverage)
+    return margin, notional
+
+
 def contracts_from_sizing_equity(
     sizing_equity: float,
     margin_pct: float,
@@ -55,8 +82,7 @@ def contracts_from_sizing_equity(
     """
     if sizing_equity <= 0 or mark_price <= 0 or contract_value <= 0:
         return 0
-    margin = float(sizing_equity) * float(margin_pct)
-    notional = margin * float(leverage)
+    _, notional = margin_usd_from_equity(sizing_equity, margin_pct, leverage)
     unit_notional = float(mark_price) * float(contract_value)
     if unit_notional <= 0:
         return 0

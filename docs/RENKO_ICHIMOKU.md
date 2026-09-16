@@ -46,12 +46,12 @@ If `RENKO_ICHIMOKU_ACCOUNT` equals `EXISTING_STRATEGY_ACCOUNT`, both strategies 
 | Variable | Default | Meaning |
 |---|---|---|
 | `RENKO_ICHIMOKU_POSITION_SIZING_MODE` | `fixed` | `fixed` = use `*_POSITION_SIZE` contracts; `dynamic` = % equity sizing |
-| `RENKO_ICHIMOKU_SIZING_BASE_USD` | `100` | Initial virtual sizing equity when state has no `sizing_equity` yet |
-| `RENKO_ICHIMOKU_MARGIN_PCT` | `0.25` | Dynamic: margin per entry = `sizing_equity × 25%` |
+| `RENKO_ICHIMOKU_SIZING_BASE_USD` | `100` | Initial virtual `sizing_equity` on first run (or when state has none) |
+| `RENKO_ICHIMOKU_MARGIN_PCT` | `0.25` | Dynamic: **each** ETH/SOL entry uses `25%` of effective equity as margin (independent per signal) |
 | `RENKO_ICHIMOKU_LEVERAGE` | `10` | Dynamic: notional = margin × leverage |
-| `RENKO_ICHIMOKU_PROFIT_RETAIN_PCT` | `0.5` | Dynamic: on a **win**, only 50% of realized PnL is added to `sizing_equity` (simulates 50% withdraw without moving funds). **Losses apply in full.** |
+| `RENKO_ICHIMOKU_PROFIT_RETAIN_PCT` | `0.5` | Dynamic: on a **win**, only 50% of realized PnL is added to virtual `sizing_equity` (simulates 50% withdraw). **Losses apply in full.** |
 
-**Dynamic mode** persists `sizing_equity` in each instance state file. On exit, realized PnL is computed from **exact entry/exit fills** × `open_quantity` × `contract_value` (same formula as trade DB). Next entry size = `floor(notional / (price × contract_value))` where `notional = sizing_equity × margin_pct × leverage`. Wallet balance is **not** used for sizing (so unrealized withdraw does not inflate size).
+**Dynamic mode** sizes from virtual `sizing_equity` (starts at `SIZING_BASE_USD`), capped by live wallet on each entry: effective equity = `min(account_balance, virtual sizing_equity)`. Example: `$60` virtual base → `$15` margin per trade → `$150` notional at `10x` (ETH and SOL each use their own 25% slice when they signal). Virtual equity is adjusted after exits (50% profit retain). Contract size uses each product's real `contract_value` from Delta (e.g. ETH `0.01`, SOL `1`).
 
 Logs use `[EXISTING]`, `[RENKO_ETH]`, and `[RENKO_SOL]`.
 
