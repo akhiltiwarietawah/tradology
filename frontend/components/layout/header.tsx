@@ -41,7 +41,8 @@ export function Header() {
   }, []);
 
   const engineStatus = statusData?.engine?.status || "STOPPED";
-  const renkoActive = (statusData?.strategies?.renko_ichimoku?.position ?? 0) !== 0;
+  const renkoEthActive = (statusData?.strategies?.renko_ichimoku_eth?.position ?? 0) !== 0;
+  const renkoSolActive = (statusData?.strategies?.renko_ichimoku_sol?.position ?? 0) !== 0;
   const strangleActive = !!(
     statusData?.current_trade?.trade_id &&
     statusData.current_trade.trade_state !== "COMPLETED"
@@ -65,7 +66,7 @@ export function Header() {
                 </Badge>
               </div>
               <p className="text-[11px] text-muted-foreground font-mono hidden sm:block">
-                BTC STRANGLE • RENKO ETH • DELTA INDIA
+                BTC STRANGLE • RENKO ETH/SOL • DELTA INDIA
               </p>
             </div>
           </Link>
@@ -89,9 +90,14 @@ export function Header() {
                   STRANGLE LIVE
                 </Badge>
               )}
-              {renkoActive && (
+              {renkoEthActive && (
                 <Badge variant="info" className="text-[10px] py-0.5">
-                  RENKO LIVE
+                  RENKO ETH
+                </Badge>
+              )}
+              {renkoSolActive && (
+                <Badge variant="info" className="text-[10px] py-0.5">
+                  RENKO SOL
                 </Badge>
               )}
               <Badge

@@ -15,14 +15,27 @@ from src.persistence.db import DatabaseManager
 from src.persistence.models import FillModel, OrderModel, TradeLegModel, TradeModel
 from src.persistence.trade_repository import to_decimal, to_datetime
 
-RENKO_STRATEGY_NAME = "renko_ichimoku"
+RENKO_STRATEGY_NAME = "renko_ichimoku"  # legacy
+RENKO_ETH_STRATEGY_NAME = "renko_ichimoku_eth"
+RENKO_SOL_STRATEGY_NAME = "renko_ichimoku_sol"
+RENKO_STRATEGY_CODES = (
+    RENKO_ETH_STRATEGY_NAME,
+    RENKO_SOL_STRATEGY_NAME,
+    RENKO_STRATEGY_NAME,
+)
 RENKO_EXCHANGE = "delta_india_renko"
 DEFAULT_CONTRACT_VALUE = Decimal("0.01")
 
 
-def make_renko_trade_id(brick_index: int, when: Optional[datetime] = None) -> str:
+def make_renko_trade_id(
+    brick_index: int,
+    when: Optional[datetime] = None,
+    instance_id: str = "",
+) -> str:
     ts = when or datetime.now(timezone.utc)
-    return f"RENKO_{ts.strftime('%Y%m%d')}_{int(brick_index)}"
+    prefix = (instance_id or "").upper()[:4]
+    tag = f"RENKO_{prefix}_" if prefix else "RENKO_"
+    return f"{tag}{ts.strftime('%Y%m%d')}_{int(brick_index)}"
 
 
 def _leg_type_for_action(action_kind: str) -> str:
@@ -71,6 +84,7 @@ class RenkoTradeRepository:
         quantity: float,
         contract_value: float = 0.01,
         config_snapshot: Optional[Dict[str, Any]] = None,
+        strategy_name: Optional[str] = None,
     ) -> None:
         now = datetime.now(timezone.utc)
         leg_type = _leg_type_for_action(action_kind)
@@ -80,9 +94,10 @@ class RenkoTradeRepository:
         cv = to_decimal(contract_value)
         entry_notional = round(fill_px * qty * cv, 4)
 
+        strat = strategy_name or order.strategy_id or RENKO_ETH_STRATEGY_NAME
         trade_values = {
             "trade_id": trade_id,
-            "strategy_name": RENKO_STRATEGY_NAME,
+            "strategy_name": strat,
             "exchange": RENKO_EXCHANGE,
             "trade_date": now.date(),
             "status": "ACTIVE",
@@ -210,7 +225,7 @@ class RenkoTradeRepository:
 
         trade_values = {
             "trade_id": trade_id,
-            "strategy_name": RENKO_STRATEGY_NAME,
+            "strategy_name": (existing.strategy_name if existing else order.strategy_id or RENKO_ETH_STRATEGY_NAME),
             "exchange": RENKO_EXCHANGE,
             "trade_date": entry_dt.date(),
             "status": "COMPLETED",
@@ -228,17 +243,26 @@ class RenkoTradeRepository:
         }
         await self._upsert_trade(trade_values)
 
-    async def get_open_trade(self) -> Optional[TradeModel]:
+    async def get_open_trade(
+        self,
+        symbol: Optional[str] = None,
+        strategy_name: Optional[str] = None,
+    ) -> Optional[TradeModel]:
         async with self.db.get_session() as session:
+            names = [strategy_name] if strategy_name else list(RENKO_STRATEGY_CODES)
             stmt = (
                 select(TradeModel)
                 .where(
-                    TradeModel.strategy_name == RENKO_STRATEGY_NAME,
+                    TradeModel.strategy_name.in_(names),
                     TradeModel.status == "ACTIVE",
                 )
                 .order_by(desc(TradeModel.entry_time))
-                .limit(1)
             )
+            if symbol:
+                stmt = stmt.join(TradeLegModel, TradeLegModel.trade_id == TradeModel.trade_id).where(
+                    TradeLegModel.symbol == symbol
+                )
+            stmt = stmt.limit(1)
             res = await session.execute(stmt)
             return res.scalar_one_or_none()
 
@@ -248,11 +272,16 @@ class RenkoTradeRepository:
             res = await session.execute(stmt)
             return res.scalar_one_or_none()
 
-    async def list_trades(self, limit: int = 50) -> List[TradeModel]:
+    async def list_trades(
+        self,
+        limit: int = 50,
+        strategy_name: Optional[str] = None,
+    ) -> List[TradeModel]:
         async with self.db.get_session() as session:
+            names = [strategy_name] if strategy_name else list(RENKO_STRATEGY_CODES)
             stmt = (
                 select(TradeModel)
-                .where(TradeModel.strategy_name == RENKO_STRATEGY_NAME)
+                .where(TradeModel.strategy_name.in_(names))
                 .order_by(desc(TradeModel.entry_time))
                 .limit(limit)
             )

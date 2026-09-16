@@ -13,6 +13,7 @@ interface RenkoTradeHistoryProps {
   openTrade?: RenkoTradeRecord | null;
   isLoading?: boolean;
   dbConnected?: boolean;
+  title?: string;
 }
 
 export function RenkoTradeHistory({
@@ -20,6 +21,7 @@ export function RenkoTradeHistory({
   openTrade,
   isLoading,
   dbConnected = true,
+  title = "Renko Trade History",
 }: RenkoTradeHistoryProps) {
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -51,7 +53,7 @@ export function RenkoTradeHistory({
           <div className="flex items-center gap-2">
             <CandlestickChart className="h-4 w-4 text-violet-400" />
             <CardTitle className="text-xs font-semibold uppercase tracking-wider">
-              Renko Trade History (PostgreSQL)
+              {title} (PostgreSQL)
             </CardTitle>
             {!dbConnected && (
               <Badge variant="warning" className="text-[10px]">

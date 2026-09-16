@@ -1,5 +1,6 @@
 """SQLAlchemy ORM models for trades, legs, orders, and fills."""
 
+import uuid
 from decimal import Decimal
 from datetime import datetime, date
 from typing import List, Optional, Dict, Any
@@ -14,7 +15,7 @@ from sqlalchemy import (
     Index,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from sqlalchemy.orm import (
     DeclarativeBase,
     Mapped,
@@ -46,6 +47,9 @@ class TradeModel(Base):
     net_pnl: Mapped[Decimal] = mapped_column(Numeric(16, 4), nullable=False, default=Decimal("0.0000"))
     exit_reason: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     strategy_config: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
+    subscription_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
+    strategy_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
 
@@ -108,6 +112,11 @@ class OrderModel(Base):
     average_fill_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(16, 4), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     reduce_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
+    subscription_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
+    strategy_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
+    exchange_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
+    strategy_order_intent_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
 
@@ -132,6 +141,10 @@ class FillModel(Base):
     fee: Mapped[Decimal] = mapped_column(Numeric(16, 4), nullable=False, default=Decimal("0.0000"))
     fee_currency: Mapped[str] = mapped_column(String(16), nullable=False, default="USD")
     fill_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("NOW()"))
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
+    subscription_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
+    strategy_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
+    strategy_order_intent_id: Mapped[Optional[uuid.UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True, index=True)
 
     # Relationships
     order: Mapped["OrderModel"] = relationship("OrderModel", back_populates="fills")

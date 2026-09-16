@@ -34,11 +34,12 @@ def short_entry(brick: ConfirmedBrick, ich: IchimokuSnapshot) -> bool:
 
 
 def long_exit(ich: IchimokuSnapshot) -> bool:
-    return ich.ready and ich.inside_cloud
+    # Mode 3: exit if inside cloud OR at/below Kijun (whichever is true on brick close).
+    return ich.ready and (ich.inside_cloud or not ich.above_kijun)
 
 
 def short_exit(ich: IchimokuSnapshot) -> bool:
-    return ich.ready and ich.at_or_above_kijun
+    return ich.ready and (ich.inside_cloud or ich.at_or_above_kijun)
 
 
 def evaluate_confirmed_brick(position: int, brick: ConfirmedBrick, ich: IchimokuSnapshot) -> List[SignalAction]:
@@ -55,13 +56,13 @@ def evaluate_confirmed_brick(position: int, brick: ConfirmedBrick, ich: Ichimoku
     actions: List[SignalAction] = []
 
     if position == 1 and long_exit(ich):
-        actions.append(SignalAction("exit_long", "long_exit_inside_cloud"))
+        actions.append(SignalAction("exit_long", "long_exit_inside_cloud_or_kijun"))
         if want_short:
             actions.append(SignalAction("enter_short", "short_entry_after_long_exit"))
         return actions
 
     if position == -1 and short_exit(ich):
-        actions.append(SignalAction("exit_short", "short_exit_at_or_above_kijun"))
+        actions.append(SignalAction("exit_short", "short_exit_inside_cloud_or_kijun"))
         if want_long:
             actions.append(SignalAction("enter_long", "long_entry_after_short_exit"))
         return actions

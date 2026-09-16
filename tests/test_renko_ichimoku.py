@@ -127,6 +127,52 @@ def test_engine_keeps_short_strangle_when_renko_disabled():
     assert engine.strategy.config.quantity == 1.0
 
 
+def test_renko_instance_configs_eth_and_sol():
+    s = _settings(
+        renko_ichimoku_strategy_enabled=True,
+        renko_ichimoku_sol_enabled=True,
+        renko_ichimoku_box_size=15.0,
+        renko_ichimoku_sol_box_size=0.42,
+        renko_ichimoku_position_size=1,
+        renko_ichimoku_sol_position_size=30,
+    )
+    configs = s.renko_instance_configs()
+    assert len(configs) == 2
+    assert configs[0].instance_id == "eth"
+    assert configs[0].strategy_code == "renko_ichimoku_eth"
+    assert configs[0].box_size == 15.0
+    assert configs[1].instance_id == "sol"
+    assert configs[1].strategy_code == "renko_ichimoku_sol"
+    assert configs[1].box_size == 0.42
+    assert configs[1].position_size == 30
+
+
+def test_engine_starts_eth_and_sol_runtimes():
+    engine = TradingEngine(
+        settings=_settings(
+            existing_strategy_enabled=False,
+            renko_ichimoku_strategy_enabled=True,
+            renko_ichimoku_sol_enabled=True,
+            existing_strategy_account="primary",
+            renko_ichimoku_account="primary",
+            renko_ichimoku_position_size=1,
+            renko_ichimoku_sol_position_size=30,
+        )
+    )
+    assert len(engine.renko_runtimes) == 2
+    assert engine.renko_runtimes[0].instance_id == "eth"
+    assert engine.renko_runtimes[0].box_size == 15.0
+    assert engine.renko_runtimes[1].instance_id == "sol"
+    assert engine.renko_runtimes[1].box_size == 0.42
+
+
+def test_deterministic_order_ids_include_instance_prefix():
+    from src.strategies.renko_ichimoku.runtime import deterministic_client_order_id
+
+    assert deterministic_client_order_id(159, "enter_long", "SOL") == "RISOL159EL"
+    assert deterministic_client_order_id(159, "enter_long", "ETH") == "RIETH159EL"
+
+
 def test_engine_wires_independent_managers_when_both_enabled():
     engine = TradingEngine(
         settings=_settings(
@@ -158,6 +204,26 @@ def test_separate_account_without_keys_does_not_start_renko():
     )
     assert engine.renko_runtime is None
     assert isinstance(engine.strategy, BTCShortStrangleStrategy)
+
+
+def test_renko_starts_on_primary_when_strangle_disabled_and_labels_differ():
+    engine = TradingEngine(
+        settings=_settings(
+            existing_strategy_enabled=False,
+            renko_ichimoku_strategy_enabled=True,
+            existing_strategy_account="strangle",
+            existing_strategy_api_key="strangle_key",
+            existing_strategy_api_secret="strangle_secret",
+            renko_ichimoku_account="renko",
+            renko_ichimoku_api_key="",
+            renko_ichimoku_api_secret="",
+            renko_ichimoku_position_size=0,
+            renko_ichimoku_position_sizing_mode="dynamic",
+            renko_ichimoku_sizing_base_usd=50.0,
+        )
+    )
+    assert engine.renko_runtime is not None
+    assert engine.renko_adapter is engine.delta_adapter
 
 
 @pytest.mark.asyncio
@@ -198,10 +264,12 @@ async def test_both_enabled_timer_is_independent():
     engine._running = True
     engine.strategy._active = True
     engine.strategy.on_timer = AsyncMock()
-    engine.renko_runtime.on_timer = AsyncMock()
+    for runtime in engine.renko_runtimes:
+        runtime.on_timer = AsyncMock()
     await engine._on_timer_tick(datetime.now(timezone.utc))
     engine.strategy.on_timer.assert_awaited_once()
-    engine.renko_runtime.on_timer.assert_awaited_once()
+    for runtime in engine.renko_runtimes:
+        runtime.on_timer.assert_awaited_once()
 
 
 def test_renko_confirmed_closes_only_no_projection():
@@ -239,11 +307,18 @@ def test_signals_exit_first_then_entry():
     ich = _ich(inside_cloud=True, below_cloud=False, below_kijun=False)
     actions = evaluate_confirmed_brick(1, brick, ich)
     assert [a.kind for a in actions] == ["exit_long"]
+    assert actions[0].reason == "long_exit_inside_cloud_or_kijun"
+
+    # Inside cloud above Kijun: exit long (inside cloud leg of OR rule).
+    ich_cloud_above_kijun = _ich(inside_cloud=True, above_kijun=True, at_or_above_kijun=True)
+    actions_hold = evaluate_confirmed_brick(1, _brick(1, 105.0), ich_cloud_above_kijun)
+    assert [a.kind for a in actions_hold] == ["exit_long"]
 
     brick = _brick(1, 200.0)
     ich = _ich(at_or_above_kijun=True, above_cloud=True, above_kijun=True)
     actions = evaluate_confirmed_brick(-1, brick, ich)
     assert [a.kind for a in actions] == ["exit_short", "enter_long"]
+    assert actions[0].reason == "short_exit_inside_cloud_or_kijun"
 
 
 def test_unready_ichimoku_no_signals():
@@ -317,7 +392,7 @@ async def test_new_confirmed_brick_after_warmup_can_order_once(tmp_path):
     await rt.on_timer()
     assert len(exec_a.orders) == n
     for req in exec_a.orders:
-        assert req.strategy_id == "renko_ichimoku"
+        assert req.strategy_id == "renko_ichimoku_eth"
         assert req.quantity == 2.0
         assert req.symbol == "ETHUSDT"
 

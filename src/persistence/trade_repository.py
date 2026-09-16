@@ -17,6 +17,7 @@ from src.persistence.models import (
 )
 from src.core.models.trade import StrategyTrade, StrategyLeg
 from src.core.models.order import Order, Fill
+from src.platform.ledger.models import PlatformAttribution
 
 
 def to_decimal(val: Any, default: Optional[str] = "0.0000", places: Optional[int] = None) -> Optional[Decimal]:
@@ -68,6 +69,7 @@ class TradeRepository:
         trade: StrategyTrade,
         config_snapshot: Optional[Dict[str, Any]] = None,
         exchange: Optional[str] = None,
+        attribution: Optional[PlatformAttribution] = None,
     ) -> None:
         """Idempotently insert or update a Trade record."""
         trade_date_val = datetime.strptime(trade.trade_date, "%Y-%m-%d").date() if isinstance(trade.trade_date, str) else trade.trade_date
@@ -128,12 +130,15 @@ class TradeRepository:
             "strategy_config": config_snapshot or {},
             "updated_at": datetime.now(timezone.utc),
         }
+        if attribution:
+            values["user_id"] = attribution.user_id
+            values["subscription_id"] = attribution.subscription_id
+            values["strategy_account_id"] = attribution.strategy_account_id
 
-        stmt = insert(TradeModel).values(
+        insert_values = dict(
             trade_id=values["trade_id"],
             strategy_name=values["strategy_name"],
             exchange=values["exchange"],
-
             trade_date=values["trade_date"],
             status=values["status"],
             entry_time=values["entry_time"],
@@ -148,6 +153,12 @@ class TradeRepository:
             created_at=to_datetime(trade.created_at) or datetime.now(timezone.utc),
             updated_at=values["updated_at"],
         )
+        if attribution:
+            insert_values["user_id"] = attribution.user_id
+            insert_values["subscription_id"] = attribution.subscription_id
+            insert_values["strategy_account_id"] = attribution.strategy_account_id
+
+        stmt = insert(TradeModel).values(**insert_values)
 
         update_dict = {
             "status": stmt.excluded.status,
@@ -162,6 +173,10 @@ class TradeRepository:
         }
         if config_snapshot:
             update_dict["strategy_config"] = stmt.excluded.strategy_config
+        if attribution:
+            update_dict["user_id"] = stmt.excluded.user_id
+            update_dict["subscription_id"] = stmt.excluded.subscription_id
+            update_dict["strategy_account_id"] = stmt.excluded.strategy_account_id
 
         stmt = stmt.on_conflict_do_update(
             index_elements=[TradeModel.trade_id],
@@ -221,12 +236,14 @@ class TradeRepository:
         order: Order,
         trade_id: Optional[str] = None,
         leg_id: Optional[str] = None,
+        attribution: Optional[PlatformAttribution] = None,
+        strategy_order_intent_id: Optional[Any] = None,
     ) -> str:
         """Idempotently insert or update an Order record. Returns the order_id."""
         order_id = str(order.order_id) if order.order_id else f"ORD_{order.client_order_id}"
         exchange_order_id = str(order.order_id) if order.order_id else None
 
-        stmt = insert(OrderModel).values(
+        order_values = dict(
             order_id=order_id,
             trade_id=trade_id or order.strategy_id,
             trade_leg_id=leg_id or order.leg_id,
@@ -245,6 +262,16 @@ class TradeRepository:
             created_at=to_datetime(order.created_at) or datetime.now(timezone.utc),
             updated_at=to_datetime(order.updated_at) or datetime.now(timezone.utc),
         )
+        if attribution:
+            order_values["user_id"] = attribution.user_id
+            order_values["subscription_id"] = attribution.subscription_id
+            order_values["strategy_account_id"] = attribution.strategy_account_id
+            order_values["exchange_account_id"] = attribution.exchange_account_id
+        intent_id = strategy_order_intent_id or (attribution.strategy_order_intent_id if attribution else None)
+        if intent_id:
+            order_values["strategy_order_intent_id"] = intent_id
+
+        stmt = insert(OrderModel).values(**order_values)
 
         stmt = stmt.on_conflict_do_update(
             index_elements=[OrderModel.order_id],
@@ -263,10 +290,23 @@ class TradeRepository:
 
         return order_id
 
-    async def upsert_fill(self, fill: Fill, order_id: str) -> None:
-        """Idempotently insert an execution fill record."""
+    async def fill_exists(self, fill_id: str) -> bool:
+        async with self.db.get_session() as session:
+            stmt = select(FillModel.fill_id).where(FillModel.fill_id == fill_id)
+            return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+    async def upsert_fill(
+        self,
+        fill: Fill,
+        order_id: str,
+        attribution: Optional[PlatformAttribution] = None,
+        strategy_order_intent_id: Optional[Any] = None,
+    ) -> bool:
+        """Idempotently insert an execution fill record. Returns True if inserted."""
         fill_id = str(fill.fill_id) if fill.fill_id else f"FILL_{order_id}_{fill.quantity}_{fill.price}"
-        stmt = insert(FillModel).values(
+        if await self.fill_exists(fill_id):
+            return False
+        fill_values = dict(
             fill_id=fill_id,
             order_id=order_id,
             exchange_fill_id=str(fill.fill_id) if fill.fill_id else None,
@@ -276,14 +316,24 @@ class TradeRepository:
             fee_currency=fill.fee_asset or "USD",
             fill_time=to_datetime(fill.timestamp) or datetime.now(timezone.utc),
         )
+        if attribution:
+            fill_values["user_id"] = attribution.user_id
+            fill_values["subscription_id"] = attribution.subscription_id
+            fill_values["strategy_account_id"] = attribution.strategy_account_id
+        intent_id = strategy_order_intent_id or (attribution.strategy_order_intent_id if attribution else None)
+        if intent_id:
+            fill_values["strategy_order_intent_id"] = intent_id
+
+        stmt = insert(FillModel).values(**fill_values)
 
         stmt = stmt.on_conflict_do_nothing(
             index_elements=[FillModel.fill_id],
         )
 
         async with self.db.get_session() as session:
-            await session.execute(stmt)
+            result = await session.execute(stmt)
             await session.commit()
+            return result.rowcount > 0
 
     async def record_entry(
         self,
@@ -293,29 +343,30 @@ class TradeRepository:
         ce_fills: Optional[List[Fill]] = None,
         pe_fills: Optional[List[Fill]] = None,
         config_snapshot: Optional[Dict[str, Any]] = None,
+        attribution: Optional[PlatformAttribution] = None,
+        ce_order_intent_id: Optional[Any] = None,
+        pe_order_intent_id: Optional[Any] = None,
     ) -> None:
         """Persist complete entry lifecycle: trade, legs, entry orders, and execution fills."""
-        # 1. Upsert Trade
-        await self.upsert_trade(trade, config_snapshot=config_snapshot)
+        await self.upsert_trade(trade, config_snapshot=config_snapshot, attribution=attribution)
 
-        # 2. Upsert Legs
         if trade.ce_leg:
             await self.upsert_leg(trade.ce_leg, trade_id=trade.strategy_trade_id)
         if trade.pe_leg:
             await self.upsert_leg(trade.pe_leg, trade_id=trade.strategy_trade_id)
 
-        # 3. Upsert CE Order & Fills
         if ce_order and trade.ce_leg:
             db_ord_id = await self.upsert_order(
                 ce_order,
                 trade_id=trade.strategy_trade_id,
                 leg_id=trade.ce_leg.leg_id,
+                attribution=attribution,
+                strategy_order_intent_id=ce_order_intent_id,
             )
             if ce_fills:
                 for f in ce_fills:
-                    await self.upsert_fill(f, order_id=db_ord_id)
+                    await self.upsert_fill(f, order_id=db_ord_id, attribution=attribution)
             elif ce_order.filled_quantity > 0 and ce_order.average_fill_price:
-                # Synthesize primary fill record if individual fills not separately streamed
                 synth_fill = Fill(
                     fill_id=f"FILL_ENTRY_{db_ord_id}",
                     order_id=db_ord_id,
@@ -329,18 +380,19 @@ class TradeRepository:
                     fee_asset="USD",
                     timestamp=trade.ce_leg.entry_timestamp,
                 )
-                await self.upsert_fill(synth_fill, order_id=db_ord_id)
+                await self.upsert_fill(synth_fill, order_id=db_ord_id, attribution=attribution)
 
-        # 4. Upsert PE Order & Fills
         if pe_order and trade.pe_leg:
             db_ord_id = await self.upsert_order(
                 pe_order,
                 trade_id=trade.strategy_trade_id,
                 leg_id=trade.pe_leg.leg_id,
+                attribution=attribution,
+                strategy_order_intent_id=pe_order_intent_id,
             )
             if pe_fills:
                 for f in pe_fills:
-                    await self.upsert_fill(f, order_id=db_ord_id)
+                    await self.upsert_fill(f, order_id=db_ord_id, attribution=attribution)
             elif pe_order.filled_quantity > 0 and pe_order.average_fill_price:
                 synth_fill = Fill(
                     fill_id=f"FILL_ENTRY_{db_ord_id}",
@@ -355,7 +407,7 @@ class TradeRepository:
                     fee_asset="USD",
                     timestamp=trade.pe_leg.entry_timestamp,
                 )
-                await self.upsert_fill(synth_fill, order_id=db_ord_id)
+                await self.upsert_fill(synth_fill, order_id=db_ord_id, attribution=attribution)
 
     async def record_leg_exit(
         self,
@@ -364,24 +416,33 @@ class TradeRepository:
         exit_order: Optional[Order] = None,
         exit_fills: Optional[List[Fill]] = None,
         parent_trade: Optional[StrategyTrade] = None,
-    ) -> None:
+        attribution: Optional[PlatformAttribution] = None,
+        strategy_order_intent_id: Optional[Any] = None,
+    ) -> bool:
         """Persist leg exit details, exit order/fills, and update parent trade status and P&L."""
-        # 1. Upsert Leg
-        await self.upsert_leg(leg, trade_id=trade_id)
+        intent_id = strategy_order_intent_id or (attribution.strategy_order_intent_id if attribution else None)
+        wrote_fill = False
 
-        # 2. Upsert Exit Order & Fills
         if exit_order:
             db_ord_id = await self.upsert_order(
                 exit_order,
                 trade_id=trade_id,
                 leg_id=leg.leg_id,
+                attribution=attribution,
+                strategy_order_intent_id=intent_id,
             )
             if exit_fills:
                 for f in exit_fills:
-                    await self.upsert_fill(f, order_id=db_ord_id)
+                    inserted = await self.upsert_fill(
+                        f,
+                        order_id=db_ord_id,
+                        attribution=attribution,
+                        strategy_order_intent_id=intent_id,
+                    )
+                    wrote_fill = wrote_fill or inserted
             elif exit_order.filled_quantity > 0 and exit_order.average_fill_price:
                 synth_fill = Fill(
-                    fill_id=f"FILL_EXIT_{db_ord_id}",
+                    fill_id=f"FILL_EXIT_{db_ord_id}_{exit_order.filled_quantity}_{exit_order.average_fill_price}",
                     order_id=db_ord_id,
                     client_order_id=exit_order.client_order_id,
                     instrument_id=exit_order.instrument_id,
@@ -389,15 +450,22 @@ class TradeRepository:
                     side=exit_order.side,
                     quantity=exit_order.filled_quantity,
                     price=exit_order.average_fill_price,
-                    fee=0.0,
+                    fee=float(getattr(exit_order, "fee", 0) or 0),
                     fee_asset="USD",
                     timestamp=leg.exit_timestamp,
                 )
-                await self.upsert_fill(synth_fill, order_id=db_ord_id)
+                wrote_fill = await self.upsert_fill(
+                    synth_fill,
+                    order_id=db_ord_id,
+                    attribution=attribution,
+                    strategy_order_intent_id=intent_id,
+                )
 
-        # 3. Update Parent Trade
+        await self.upsert_leg(leg, trade_id=trade_id)
+
         if parent_trade:
-            await self.upsert_trade(parent_trade)
+            await self.upsert_trade(parent_trade, attribution=attribution)
+        return wrote_fill or exit_fills is None
 
     async def record_trade_completion(
         self,

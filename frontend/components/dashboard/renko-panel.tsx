@@ -46,7 +46,7 @@ export function RenkoPanel({ snapshot, isLoading }: RenkoPanelProps) {
           <div className="flex items-center gap-2">
             <CandlestickChart className="h-4 w-4 text-muted-foreground" />
             <CardTitle className="text-xs font-semibold text-muted-foreground">
-              Renko Ichimoku (ETH Perpetual)
+              Renko Ichimoku
             </CardTitle>
             <Badge variant="outline" className="text-[10px]">
               DISABLED

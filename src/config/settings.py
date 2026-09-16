@@ -3,7 +3,10 @@
 import os
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, List, Optional
+
+if TYPE_CHECKING:
+    from src.strategies.renko_ichimoku.instance_config import RenkoInstanceConfig
 from datetime import datetime, time
 import pytz
 from pydantic import Field, field_validator, model_validator
@@ -121,11 +124,42 @@ class Settings(BaseSettings):
     # API Security, Authentication & Abuse Protection
     api_auth_enabled: bool = Field(default=False, description="Enable API key authentication on protected routes")
     dashboard_api_key: Optional[str] = Field(default=None, description="Secret API key required for protected endpoints (X-API-Key or Bearer token)")
+    credentials_encryption_key: Optional[str] = Field(
+        default=None,
+        description="Fernet key for encrypting user exchange credentials at rest",
+    )
     cors_allowed_origins: str = Field(
         default="http://localhost:3000,http://127.0.0.1:3000",
         description="Comma-separated list of allowed CORS origins",
     )
     rate_limit_per_minute: int = Field(default=120, description="Max API requests per minute per IP")
+    platform_sync_interval_seconds: int = Field(default=60, description="Background exchange account sync interval")
+    platform_runtime_execution_enabled: bool = Field(
+        default=False,
+        description="Master switch for multi-user platform runtime live execution. Keep false until verified.",
+    )
+    platform_delta_live_enabled: bool = Field(
+        default=False,
+        description="Allow platform runtime to submit live orders to Delta India.",
+    )
+    platform_live_trading_enabled: bool = Field(
+        default=False,
+        description="Global kill switch for all platform live order submission.",
+    )
+    platform_live_dry_run_enabled: bool = Field(
+        default=True,
+        description="When LIVE mode requested but live flags off, use LIVE_DRY_RUN (log WOULD EXECUTE).",
+    )
+    platform_runtime_heartbeat_seconds: int = Field(default=15, description="Runtime heartbeat interval")
+    platform_runtime_worker_id: str = Field(default="api-worker-1", description="Worker identity for runtime coordination")
+    platform_max_live_test_quantity: Optional[float] = Field(
+        default=1.0,
+        description="Maximum order quantity for controlled LIVE test (backend enforced). None disables cap.",
+    )
+    platform_max_live_test_notional: Optional[float] = Field(
+        default=500.0,
+        description="Maximum notional USD for controlled LIVE test orders. None disables cap.",
+    )
 
     # Independent strategy enablement (existing BTC short strangle vs ETH Renko Ichimoku)
     existing_strategy_enabled: bool = Field(
@@ -134,7 +168,15 @@ class Settings(BaseSettings):
     )
     existing_strategy_account: str = Field(
         default="primary",
-        description="Account label for the existing strategy. Uses primary Delta API keys.",
+        description="Account label for the short-strangle strategy. Optional keys in EXISTING_STRATEGY_API_* when set.",
+    )
+    existing_strategy_api_key: str = Field(
+        default="",
+        description="Optional Delta API key for EXISTING_STRATEGY_ACCOUNT. Uses DELTA_* when empty.",
+    )
+    existing_strategy_api_secret: str = Field(
+        default="",
+        description="Optional Delta API secret for EXISTING_STRATEGY_ACCOUNT.",
     )
     renko_ichimoku_strategy_enabled: bool = Field(
         default=False,
@@ -154,11 +196,39 @@ class Settings(BaseSettings):
     )
     renko_ichimoku_symbol: str = Field(
         default="ETHUSDT",
-        description="Delta perpetual symbol for the Renko strategy (ETHUSDT / ETHUSD).",
+        description="Delta perpetual symbol for the ETH Renko instance (ETHUSDT / ETHUSD).",
+    )
+    renko_ichimoku_box_size: float = Field(
+        default=15.0,
+        description="Fixed USD Renko box size for the ETH instance.",
     )
     renko_ichimoku_position_size: float = Field(
         default=0.0,
-        description="Renko strategy order size in contracts. Independent of ORDER_QUANTITY. 0 = no orders.",
+        description="ETH Renko order size in contracts. Independent of ORDER_QUANTITY. 0 = no orders.",
+    )
+    renko_ichimoku_sol_enabled: bool = Field(
+        default=False,
+        description="Enable the SOL Renko+Ichimoku instance alongside ETH when RENKO_ICHIMOKU_STRATEGY_ENABLED=true.",
+    )
+    renko_ichimoku_sol_symbol: str = Field(
+        default="SOLUSDT",
+        description="Delta perpetual symbol for the SOL Renko instance.",
+    )
+    renko_ichimoku_sol_box_size: float = Field(
+        default=0.42,
+        description="Fixed USD Renko box size for SOL (~0.5% at ~$84).",
+    )
+    renko_ichimoku_sol_position_size: float = Field(
+        default=0.0,
+        description="SOL Renko order size in contracts. 0 = signals only.",
+    )
+    renko_ichimoku_sol_state_file: Optional[str] = Field(
+        default=None,
+        description="Independent state file for the SOL Renko instance.",
+    )
+    renko_ichimoku_sol_flatten: bool = Field(
+        default=False,
+        description="Startup flatten for the SOL Renko instrument only.",
     )
     renko_ichimoku_candle_resolution: str = Field(
         default="15m",
@@ -171,6 +241,29 @@ class Settings(BaseSettings):
     renko_ichimoku_flatten: bool = Field(
         default=False,
         description="If true at startup, send one reduce-only flatten of the Renko instrument then halt. Leave false during normal trading.",
+    )
+    renko_ichimoku_position_sizing_mode: str = Field(
+        default="fixed",
+        description="Renko sizing: 'fixed' = RENKO_*_POSITION_SIZE contracts; 'dynamic' = margin = sizing_equity × margin_pct × leverage.",
+    )
+    renko_ichimoku_sizing_base_usd: float = Field(
+        default=100.0,
+        description="Starting virtual sizing equity (USD) for dynamic mode when state has no sizing_equity yet.",
+    )
+    renko_ichimoku_margin_pct: float = Field(
+        default=0.25,
+        description="Dynamic mode: margin per entry = sizing_equity × this value (e.g. 0.25 = 25%).",
+    )
+    renko_ichimoku_leverage: float = Field(
+        default=10.0,
+        description="Dynamic mode: notional = margin × leverage (e.g. 10x).",
+    )
+    renko_ichimoku_profit_retain_pct: float = Field(
+        default=0.5,
+        description=(
+            "Dynamic mode: fraction of realized profit kept in sizing_equity after each win "
+            "(0.5 = simulate 50% withdraw; loss always applied in full)."
+        ),
     )
 
 
@@ -200,9 +293,11 @@ class Settings(BaseSettings):
             env_suffix = "live" if self.delta_env == Environment.LIVE else "testnet"
             self.state_file = f"{self.data_dir}/trade_state_{env_suffix}.json"
 
+        env_suffix = "live" if self.delta_env == Environment.LIVE else "testnet"
         if not self.renko_ichimoku_state_file:
-            env_suffix = "live" if self.delta_env == Environment.LIVE else "testnet"
-            self.renko_ichimoku_state_file = f"{self.data_dir}/renko_ichimoku_state_{env_suffix}.json"
+            self.renko_ichimoku_state_file = f"{self.data_dir}/renko_ichimoku_eth_state_{env_suffix}.json"
+        if not self.renko_ichimoku_sol_state_file:
+            self.renko_ichimoku_sol_state_file = f"{self.data_dir}/renko_ichimoku_sol_state_{env_suffix}.json"
 
         # Ensure LIVE environment requires valid credentials unless dry_run is true
         if self.delta_env == Environment.LIVE and not self.dry_run:
@@ -240,14 +335,85 @@ class Settings(BaseSettings):
 
     def uses_separate_renko_account(self) -> bool:
         return (
-            self.renko_ichimoku_strategy_enabled
+            self.has_any_renko_enabled()
             and self.renko_ichimoku_account.strip().lower() != self.existing_strategy_account.strip().lower()
         )
 
+    def existing_strategy_api_credentials(self) -> tuple[str, str]:
+        """Short-strangle account credentials. Falls back to active DELTA_* keys."""
+        if self.existing_strategy_api_key and self.existing_strategy_api_secret:
+            return self.existing_strategy_api_key, self.existing_strategy_api_secret
+        return self.active_api_key, self.active_api_secret
+
+    def renko_uses_shared_primary_adapter(self) -> bool:
+        """
+        Renko trades on DELTA_LIVE_* / DELTA_TESTNET_* without RENKO_ICHIMOKU_API_*.
+
+        True when account labels match, or when strangle is off and Renko keys are not set
+        (primary Delta keys are the Renko trader's account).
+        """
+        if not self.uses_separate_renko_account():
+            return True
+        if self.renko_ichimoku_api_key and self.renko_ichimoku_api_secret:
+            return False
+        if not self.existing_strategy_enabled:
+            return True
+        return False
+
     def renko_api_credentials(self) -> tuple[str, str]:
-        if self.uses_separate_renko_account() and self.renko_ichimoku_api_key and self.renko_ichimoku_api_secret:
+        if not self.renko_uses_shared_primary_adapter():
             return self.renko_ichimoku_api_key, self.renko_ichimoku_api_secret
         return self.active_api_key, self.active_api_secret
+
+    def has_any_renko_enabled(self) -> bool:
+        return bool(self.renko_ichimoku_strategy_enabled or self.renko_ichimoku_sol_enabled)
+
+    def renko_instance_configs(self) -> List["RenkoInstanceConfig"]:
+        """Build enabled Renko instances (ETH when strategy flag on; SOL when sol flag on)."""
+        from src.strategies.renko_ichimoku.instance_config import (
+            RENKO_ETH_STRATEGY_CODE,
+            RENKO_SOL_STRATEGY_CODE,
+            RenkoInstanceConfig,
+        )
+
+        configs: List[RenkoInstanceConfig] = []
+        sizing_mode = (self.renko_ichimoku_position_sizing_mode or "fixed").strip().lower()
+        sizing_common = {
+            "position_sizing_mode": sizing_mode,
+            "sizing_base_usd": self.renko_ichimoku_sizing_base_usd,
+            "margin_pct": self.renko_ichimoku_margin_pct,
+            "leverage": self.renko_ichimoku_leverage,
+            "profit_retain_pct": self.renko_ichimoku_profit_retain_pct,
+        }
+        if self.renko_ichimoku_strategy_enabled:
+            configs.append(
+                RenkoInstanceConfig(
+                    instance_id="eth",
+                    strategy_code=RENKO_ETH_STRATEGY_CODE,
+                    symbol=self.renko_ichimoku_symbol,
+                    box_size=self.renko_ichimoku_box_size,
+                    position_size=self.renko_ichimoku_position_size,
+                    state_file=self.renko_ichimoku_state_file or "data/renko_ichimoku_eth_state.json",
+                    candle_resolution=self.renko_ichimoku_candle_resolution,
+                    flatten=self.renko_ichimoku_flatten,
+                    **sizing_common,
+                )
+            )
+        if self.renko_ichimoku_sol_enabled:
+            configs.append(
+                RenkoInstanceConfig(
+                    instance_id="sol",
+                    strategy_code=RENKO_SOL_STRATEGY_CODE,
+                    symbol=self.renko_ichimoku_sol_symbol,
+                    box_size=self.renko_ichimoku_sol_box_size,
+                    position_size=self.renko_ichimoku_sol_position_size,
+                    state_file=self.renko_ichimoku_sol_state_file or "data/renko_ichimoku_sol_state.json",
+                    candle_resolution=self.renko_ichimoku_candle_resolution,
+                    flatten=self.renko_ichimoku_sol_flatten,
+                    **sizing_common,
+                )
+            )
+        return configs
 
     def get_parsed_entry_time(self) -> time:
         return datetime.strptime(self.entry_time_ist, "%H:%M:%S").time()

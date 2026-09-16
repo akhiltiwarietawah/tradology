@@ -255,8 +255,13 @@ export class ApiClient {
   /**
    * Get Renko Ichimoku trade history from PostgreSQL
    */
-  async getRenkoTrades(limit: number = 50): Promise<RenkoTradesResponse> {
-    const data = await this.request<any>(`/api/v1/renko/trades?limit=${limit}`);
+  async getRenkoTrades(
+    limit: number = 50,
+    strategyName?: string,
+  ): Promise<RenkoTradesResponse> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (strategyName) params.set("strategy_name", strategyName);
+    const data = await this.request<any>(`/api/v1/renko/trades?${params.toString()}`);
     const parsed = RenkoTradesResponseSchema.safeParse(data);
     if (!parsed.success) {
       console.warn("[ApiClient] /api/v1/renko/trades schema validation warning:", parsed.error);

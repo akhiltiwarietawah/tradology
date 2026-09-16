@@ -26,6 +26,10 @@ import {
   type StrategyTab,
 } from "@/components/dashboard";
 import { formatDateTime } from "@/lib/utils";
+import { PlatformPortfolioSection } from "@/components/platform/platform-portfolio";
+
+const RENKO_ETH = "renko_ichimoku_eth";
+const RENKO_SOL = "renko_ichimoku_sol";
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<StrategyTab>("overview");
@@ -46,32 +50,37 @@ export default function DashboardPage() {
   } = useSystemStatus();
 
   const strangleMetrics = usePerformanceMetrics({ strategy_name: "short_strangle" });
-  const renkoMetrics = usePerformanceMetrics({ strategy_name: "renko_ichimoku" });
+  const renkoEthMetrics = usePerformanceMetrics({ strategy_name: RENKO_ETH });
+  const renkoSolMetrics = usePerformanceMetrics({ strategy_name: RENKO_SOL });
 
-  const {
-    trades: renkoTrades,
-    openTrade: renkoOpenTrade,
-    dbConnected: renkoDbConnected,
-    isLoading: isRenkoLoading,
-    refetch: refetchRenko,
-  } = useRenkoTrades();
+  const ethRenko = useRenkoTrades(50, RENKO_ETH);
+  const solRenko = useRenkoTrades(50, RENKO_SOL);
 
-  const renkoSnapshot = statusData?.strategies?.renko_ichimoku;
-  const renkoEnabled = !!renkoSnapshot?.enabled;
+  const ethSnapshot = statusData?.strategies?.renko_ichimoku_eth;
+  const solSnapshot = statusData?.strategies?.renko_ichimoku_sol;
+  const renkoEthEnabled = !!ethSnapshot?.enabled;
+  const renkoSolEnabled = !!solSnapshot?.enabled;
 
   const showStrangle = activeTab === "overview" || activeTab === "strangle";
-  const showRenko = activeTab === "overview" || activeTab === "renko";
+  const showRenkoEth =
+    renkoEthEnabled && (activeTab === "overview" || activeTab === "renko_eth");
+  const showRenkoSol =
+    renkoSolEnabled && (activeTab === "overview" || activeTab === "renko_sol");
 
   const activeMetrics =
-    activeTab === "renko"
-      ? renkoMetrics
+    activeTab === "renko_eth"
+      ? renkoEthMetrics
+      : activeTab === "renko_sol"
+      ? renkoSolMetrics
       : strangleMetrics;
 
   const handleRefreshAll = () => {
     refetchStatus();
     strangleMetrics.refetch();
-    renkoMetrics.refetch();
-    refetchRenko();
+    renkoEthMetrics.refetch();
+    renkoSolMetrics.refetch();
+    ethRenko.refetch();
+    solRenko.refetch();
   };
 
   const engineStatus = statusData?.engine?.status || "STOPPED";
@@ -79,8 +88,34 @@ export default function DashboardPage() {
   const dryRun = statusData?.engine?.dry_run ?? false;
   const killSwitch = statusData?.engine?.kill_switch ?? false;
 
+  const tabBadge =
+    activeTab === "renko_eth"
+      ? "RENKO ETH"
+      : activeTab === "renko_sol"
+      ? "RENKO SOL"
+      : activeTab === "strangle"
+      ? "BTC STRANGLE"
+      : "MULTI-STRATEGY";
+
+  const perfTitle =
+    activeTab === "renko_eth"
+      ? "Renko ETH Performance"
+      : activeTab === "renko_sol"
+      ? "Renko SOL Performance"
+      : activeTab === "strangle"
+      ? "Strangle Performance"
+      : "Portfolio Performance (Strangle)";
+
   return (
     <div className="space-y-5 pb-10">
+      <PlatformPortfolioSection />
+
+      <div className="border-t border-border/60 pt-5">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
+          Trading Engine
+        </h2>
+      </div>
+
       {isStatusError && (
         <ApiErrorBanner
           title={isNetworkError ? "FastAPI Trading Backend Offline" : "API Communication Error"}
@@ -97,7 +132,8 @@ export default function DashboardPage() {
         <StrategyTabs
           activeTab={activeTab}
           onChange={setActiveTab}
-          renkoEnabled={renkoEnabled}
+          renkoEthEnabled={renkoEthEnabled}
+          renkoSolEnabled={renkoSolEnabled}
         />
 
         <div className="flex items-center gap-2 self-end xl:self-auto">
@@ -139,7 +175,7 @@ export default function DashboardPage() {
           </Badge>
 
           <Badge variant="outline" className="text-[11px] font-mono border-border/80">
-            {activeTab === "renko" ? "RENKO ICHIMOKU" : activeTab === "strangle" ? "BTC STRANGLE" : "MULTI-STRATEGY"}
+            {tabBadge}
           </Badge>
 
           <Badge
@@ -178,21 +214,19 @@ export default function DashboardPage() {
       <PerformanceOverview
         metrics={activeMetrics.metrics}
         isLoading={activeMetrics.isLoading}
-        title={
-          activeTab === "renko"
-            ? "Renko Performance"
-            : activeTab === "strangle"
-            ? "Strangle Performance"
-            : "Portfolio Performance (Strangle)"
-        }
+        title={perfTitle}
       />
 
       {showStrangle && (
         <ActiveTrade status={statusData} isLoading={isStatusLoading} />
       )}
 
-      {showRenko && (
-        <RenkoPanel snapshot={renkoSnapshot} isLoading={isStatusLoading} />
+      {showRenkoEth && (
+        <RenkoPanel snapshot={ethSnapshot} isLoading={isStatusLoading} />
+      )}
+
+      {showRenkoSol && (
+        <RenkoPanel snapshot={solSnapshot} isLoading={isStatusLoading} />
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
@@ -214,12 +248,23 @@ export default function DashboardPage() {
         />
       )}
 
-      {showRenko && (
+      {showRenkoEth && (
         <RenkoTradeHistory
-          trades={renkoTrades}
-          openTrade={renkoOpenTrade}
-          isLoading={isRenkoLoading}
-          dbConnected={renkoDbConnected}
+          trades={ethRenko.trades}
+          openTrade={ethRenko.openTrade}
+          isLoading={ethRenko.isLoading}
+          dbConnected={ethRenko.dbConnected}
+          title="Renko ETH Trade History"
+        />
+      )}
+
+      {showRenkoSol && (
+        <RenkoTradeHistory
+          trades={solRenko.trades}
+          openTrade={solRenko.openTrade}
+          isLoading={solRenko.isLoading}
+          dbConnected={solRenko.dbConnected}
+          title="Renko SOL Trade History"
         />
       )}
 

@@ -32,6 +32,10 @@ class RenkoIchimokuState:
     in_flight_brick_index: Optional[int] = None
     orders_halted: bool = False
     halt_reason: Optional[str] = None
+    # Dynamic sizing: virtual equity for 25% margin (simulates partial withdraw on wins).
+    sizing_equity: Optional[float] = None
+    open_quantity: Optional[float] = None
+    last_realized_pnl: Optional[float] = None
 
 
 class RenkoIchimokuStateStore:
@@ -67,6 +71,9 @@ class RenkoIchimokuStateStore:
                 in_flight_brick_index=data.get("in_flight_brick_index"),
                 orders_halted=bool(data.get("orders_halted")),
                 halt_reason=data.get("halt_reason"),
+                sizing_equity=data.get("sizing_equity"),
+                open_quantity=data.get("open_quantity"),
+                last_realized_pnl=data.get("last_realized_pnl"),
             )
         except Exception as e:
             self.logger.error(f"Failed to load Renko Ichimoku state: {e}. Starting flat (will not reopen).")

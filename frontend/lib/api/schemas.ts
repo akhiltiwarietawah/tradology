@@ -69,6 +69,9 @@ export const AlertItemSchema = z.object({
 
 export const RenkoSnapshotSchema = z.object({
   enabled: z.boolean().optional(),
+  instance_id: z.string().optional(),
+  strategy_code: z.string().optional(),
+  box_size: z.number().optional(),
   account: z.string().optional(),
   symbol: z.string().optional(),
   configured_symbol: z.string().optional(),
@@ -164,6 +167,8 @@ export const SystemStatusSchema = z.object({
           active: z.boolean().optional(),
         })
         .optional(),
+      renko_ichimoku_eth: RenkoSnapshotSchema.optional(),
+      renko_ichimoku_sol: RenkoSnapshotSchema.optional(),
       renko_ichimoku: RenkoSnapshotSchema.optional(),
     })
     .optional(),

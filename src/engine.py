@@ -20,7 +20,6 @@ from src.strategies.short_strangle.models import ShortStrangleConfig
 from src.strategies.renko_ichimoku.prefix_logger import PrefixLogger
 from src.strategies.renko_ichimoku.runtime import RenkoIchimokuRuntime
 from src.strategies.renko_ichimoku.delta_bridge import DeltaCandleProductBridge
-from src.strategies.renko_ichimoku.params import RENKO_ICHIMOKU_FIXED_PARAMS
 from src.execution.execution_engine import ExecutionEngine
 from src.execution.order_manager import OrderManager
 from src.risk.risk_manager import RiskManager
@@ -137,8 +136,8 @@ class TradingEngine:
         self.renko_adapter: Optional[DeltaExchangeAdapter] = None
         self.renko_order_manager: Optional[OrderManager] = None
         self.renko_execution: Optional[ExecutionEngine] = None
-        self.renko_runtime: Optional[RenkoIchimokuRuntime] = None
-        if self.settings.renko_ichimoku_strategy_enabled:
+        self.renko_runtimes: List[RenkoIchimokuRuntime] = []
+        if self.settings.has_any_renko_enabled():
             self._init_renko_ichimoku()
 
         # Scheduler
@@ -165,17 +164,29 @@ class TradingEngine:
         self._last_reconcile_time = 0.0
         self._last_reconciliation_result: Optional[ReconciliationResult] = None
 
+    @property
+    def renko_runtime(self) -> Optional[RenkoIchimokuRuntime]:
+        """Backward-compatible accessor: first configured Renko instance."""
+        return self.renko_runtimes[0] if self.renko_runtimes else None
+
     def _init_renko_ichimoku(self) -> None:
-        """Wire a fully isolated Renko runtime. Never reuses strangle OrderManager or state file."""
+        """Wire isolated Renko runtimes (ETH, SOL, …). Never reuses strangle OrderManager or state files."""
+        instances = self.settings.renko_instance_configs()
+        if not instances:
+            return
         separate = self.settings.uses_separate_renko_account()
-        if separate and (not self.settings.renko_ichimoku_api_key or not self.settings.renko_ichimoku_api_secret):
+        use_shared_primary = self.settings.renko_uses_shared_primary_adapter()
+        if separate and not use_shared_primary and (
+            not self.settings.renko_ichimoku_api_key or not self.settings.renko_ichimoku_api_secret
+        ):
             self.logger.error(
                 "[RENKO_ICHIMOKU] RENKO_ICHIMOKU_ACCOUNT differs from EXISTING_STRATEGY_ACCOUNT "
-                "but RENKO_ICHIMOKU_API_KEY / RENKO_ICHIMOKU_API_SECRET are empty. Strategy not started."
+                "and strangle is enabled, but RENKO_ICHIMOKU_API_KEY / RENKO_ICHIMOKU_API_SECRET are empty. "
+                "Strategy not started."
             )
             return
         is_live = self.settings.delta_env.value == "live"
-        if separate:
+        if separate and not use_shared_primary:
             key, secret = self.settings.renko_api_credentials()
             self.renko_adapter = DeltaExchangeAdapter(
                 rest_url=self.settings.active_rest_url,
@@ -197,54 +208,70 @@ class TradingEngine:
             logger=PrefixLogger(self.logger, "RENKO_ICHIMOKU"),
         )
         bridge = DeltaCandleProductBridge(self.renko_adapter, PrefixLogger(self.logger, "RENKO_ICHIMOKU"))
-        self.renko_runtime = RenkoIchimokuRuntime(
-            account_name=self.settings.renko_ichimoku_account,
-            symbol=self.settings.renko_ichimoku_symbol,
-            position_size=self.settings.renko_ichimoku_position_size,
-            candle_resolution=self.settings.renko_ichimoku_candle_resolution,
-            state_file=self.settings.renko_ichimoku_state_file or "data/renko_ichimoku_state.json",
-            execution_engine=self.renko_execution,
-            order_manager=self.renko_order_manager,
-            candle_source=bridge,
-            product_source=bridge,
-            logger=self.logger,
-            dry_run=self.settings.dry_run,
-            kill_switch=self.settings.kill_switch,
-            exchange_ops=self.renko_adapter,
-            flatten=self.settings.renko_ichimoku_flatten,
-            fill_persister=self._persist_renko_fill_to_db,
-            manual_close_persister=self._persist_renko_manual_close_to_db,
-        )
-        self.logger.info(
-            f"[RENKO_ICHIMOKU] Configured account={self.settings.renko_ichimoku_account} "
-            f"symbol={self.settings.renko_ichimoku_symbol} size={self.settings.renko_ichimoku_position_size} "
-            f"separate_account={separate}"
-        )
+        for cfg in instances:
+            runtime = RenkoIchimokuRuntime(
+                account_name=self.settings.renko_ichimoku_account,
+                symbol=cfg.symbol,
+                position_size=cfg.position_size,
+                candle_resolution=cfg.candle_resolution,
+                state_file=cfg.state_file,
+                execution_engine=self.renko_execution,
+                order_manager=self.renko_order_manager,
+                candle_source=bridge,
+                product_source=bridge,
+                logger=self.logger,
+                dry_run=self.settings.dry_run,
+                kill_switch=self.settings.kill_switch,
+                exchange_ops=self.renko_adapter,
+                flatten=cfg.flatten,
+                fill_persister=self._persist_renko_fill_to_db,
+                manual_close_persister=self._persist_renko_manual_close_to_db,
+                box_size=cfg.box_size,
+                instance_id=cfg.instance_id,
+                strategy_code=cfg.strategy_code,
+                position_sizing_mode=cfg.position_sizing_mode,
+                sizing_base_usd=cfg.sizing_base_usd,
+                margin_pct=cfg.margin_pct,
+                leverage=cfg.leverage,
+                profit_retain_pct=cfg.profit_retain_pct,
+            )
+            self.renko_runtimes.append(runtime)
+            sizing_desc = (
+                f"dynamic base=${cfg.sizing_base_usd} margin={cfg.margin_pct} lev={cfg.leverage}x "
+                f"retain={cfg.profit_retain_pct}"
+                if cfg.position_sizing_mode == "dynamic"
+                else f"fixed size={cfg.position_size}"
+            )
+            self.logger.info(
+                f"[RENKO_{cfg.instance_id.upper()}] Configured account={self.settings.renko_ichimoku_account} "
+                f"symbol={cfg.symbol} box={cfg.box_size} sizing={sizing_desc} "
+                f"state={cfg.state_file} separate_account={separate}"
+            )
 
     def _warn_if_renko_disabled_with_open_state(self) -> None:
         """If Renko is disabled, do not trade — but warn if a persisted position was left unmanaged."""
-        if self.settings.renko_ichimoku_strategy_enabled:
-            return
-        path = self.settings.renko_ichimoku_state_file
-        if not path:
+        if self.settings.has_any_renko_enabled():
             return
         from pathlib import Path
-        if not Path(path).exists():
-            return
-        try:
-            from src.strategies.renko_ichimoku.state import RenkoIchimokuStateStore
+        from src.strategies.renko_ichimoku.state import RenkoIchimokuStateStore
 
-            st = RenkoIchimokuStateStore(path, PrefixLogger(self.logger, "RENKO_ICHIMOKU")).load()
-        except Exception:
-            return
-        if int(st.position or 0) != 0:
-            self.logger.critical(
-                "[RENKO_ICHIMOKU] Strategy is DISABLED but state file still has position="
-                f"{st.position} symbol={st.resolved_symbol or st.symbol} order_id={st.entry_order_id}. "
-                "This process will not manage or close it. To flatten once: set "
-                "RENKO_ICHIMOKU_STRATEGY_ENABLED=true and RENKO_ICHIMOKU_FLATTEN=true, restart, "
-                "then set both back (ENABLED=false, FLATTEN=false)."
-            )
+        candidates = [
+            self.settings.renko_ichimoku_state_file,
+            self.settings.renko_ichimoku_sol_state_file,
+        ]
+        for path in candidates:
+            if not path or not Path(path).exists():
+                continue
+            try:
+                st = RenkoIchimokuStateStore(path, PrefixLogger(self.logger, "RENKO_ICHIMOKU")).load()
+            except Exception:
+                continue
+            if int(st.position or 0) != 0:
+                self.logger.critical(
+                    "[RENKO_ICHIMOKU] Strategy is DISABLED but state file still has position="
+                    f"{st.position} symbol={st.resolved_symbol or st.symbol} order_id={st.entry_order_id} "
+                    f"file={path}. This process will not manage or close it."
+                )
 
     async def start(self):
         """Start the entire trading engine."""
@@ -353,12 +380,13 @@ class TradingEngine:
                     message="✅ Bot started. No active trade. Exchange synchronized.",
                 )
 
-        if self.renko_runtime:
+        if self.renko_runtimes:
             if self.renko_adapter is not None and self.renko_adapter is not self.delta_adapter:
                 await self.renko_adapter.initialize()
-            await self.renko_runtime.start()
-            await self._backfill_renko_db_if_needed()
-            await self._close_orphan_renko_db_trade_if_flat()
+            for runtime in self.renko_runtimes:
+                await runtime.start()
+                await self._backfill_renko_db_if_needed(runtime)
+                await self._close_orphan_renko_db_trade_if_flat(runtime)
 
         # 7. Start Scheduler (runs background reconciliation, monitoring, and timer loops)
         await self.scheduler.start()
@@ -413,8 +441,8 @@ class TradingEngine:
 
         # Flush state
         self._save_state()
-        if self.renko_runtime:
-            self.renko_runtime.store.save(self.renko_runtime.state)
+        for runtime in self.renko_runtimes:
+            runtime.store.save(runtime.state)
 
         # Disconnect Database
         if self.db_manager.is_connected:
@@ -479,14 +507,17 @@ class TradingEngine:
         if self.settings.existing_strategy_enabled and self.strategy.is_active:
             await self.strategy.on_timer(now_ist, history=self.state_store._historical_trades)
 
-        if self.renko_runtime:
-            self.renko_runtime.kill_switch = (
-                self.settings.kill_switch or self.risk_manager.is_kill_switch_active
-            )
-            try:
-                await self.renko_runtime.on_timer(now_ist)
-            except Exception as e:
-                self.logger.error(f"[RENKO_ICHIMOKU] Timer error: {e}", exc_info=True)
+        if self.renko_runtimes:
+            kill = self.settings.kill_switch or self.risk_manager.is_kill_switch_active
+            for runtime in self.renko_runtimes:
+                runtime.kill_switch = kill
+                try:
+                    await runtime.on_timer(now_ist)
+                except Exception as e:
+                    self.logger.error(
+                        f"[RENKO_{runtime.instance_id.upper()}] Timer error: {e}",
+                        exc_info=True,
+                    )
 
         # Risk check
         if self.settings.existing_strategy_enabled and self.strategy.current_trade and self.strategy.current_trade.is_active:
@@ -855,7 +886,7 @@ class TradingEngine:
 
     async def _persist_renko_manual_close_to_db(self, **kwargs) -> None:
         """Record a manual exchange close when reconcile syncs local state to flat."""
-        if not self.db_manager.is_connected or not self.renko_runtime:
+        if not self.db_manager.is_connected:
             return
         local_side = int(kwargs["local_side"])
         entry_order_id = kwargs.get("entry_order_id")
@@ -868,7 +899,7 @@ class TradingEngine:
         last_brick_close = rt.state.last_brick_close
         action_kind = "exit_long" if local_side > 0 else "exit_short"
         brick_index = rt.state.last_traded_brick_index or 0
-        trade_id = trade_id or make_renko_trade_id(brick_index)
+        trade_id = trade_id or make_renko_trade_id(brick_index, instance_id=rt.instance_id)
         from src.core.models.order import Order, OrderSide, OrderState, OrderType
 
         synth_order = Order(
@@ -882,7 +913,7 @@ class TradingEngine:
             filled_quantity=rt.position_size,
             average_fill_price=exit_price or entry_price or last_brick_close,
             state=OrderState.FILLED,
-            strategy_id="renko_ichimoku",
+            strategy_id=rt.strategy_code,
         )
         synth_brick = type(
             "B",
@@ -916,7 +947,7 @@ class TradingEngine:
 
     async def _persist_renko_fill_to_db(self, **kwargs) -> None:
         """Persist Renko entry/exit lifecycle to PostgreSQL (non-blocking for trading)."""
-        if not self.db_manager.is_connected or not self.renko_runtime:
+        if not self.db_manager.is_connected:
             return
         action_kind = kwargs["action_kind"]
         action_reason = kwargs["action_reason"]
@@ -924,13 +955,14 @@ class TradingEngine:
         brick = kwargs["brick"]
         rt = kwargs["runtime"]
         config_snapshot = {
-            "box_size": RENKO_ICHIMOKU_FIXED_PARAMS.box_size,
-            "candle_resolution": self.settings.renko_ichimoku_candle_resolution,
-            "position_size": self.settings.renko_ichimoku_position_size,
+            "instance_id": rt.instance_id,
+            "box_size": rt.box_size,
+            "candle_resolution": rt.candle_resolution,
+            "position_size": rt.position_size,
         }
         async with asyncio.timeout(self.settings.db_timeout_seconds):
             if action_kind in ("enter_long", "enter_short"):
-                trade_id = make_renko_trade_id(brick.index)
+                trade_id = make_renko_trade_id(brick.index, instance_id=rt.instance_id)
                 await self.renko_trade_repo.record_entry(
                     trade_id=trade_id,
                     order=order,
@@ -942,11 +974,15 @@ class TradingEngine:
                     product_id=str(rt.instrument_id),
                     quantity=rt.position_size,
                     config_snapshot=config_snapshot,
+                    strategy_name=rt.strategy_code,
                 )
-                self.logger.info(f"[RENKO_ICHIMOKU] DATABASE: persisted entry trade_id={trade_id}")
+                self.logger.info(
+                    f"[RENKO_{rt.instance_id.upper()}] DATABASE: persisted entry trade_id={trade_id}"
+                )
             elif action_kind in ("exit_long", "exit_short"):
                 trade_id = rt.state.active_trade_id or make_renko_trade_id(
-                    rt.state.last_traded_brick_index or brick.index
+                    rt.state.last_traded_brick_index or brick.index,
+                    instance_id=rt.instance_id,
                 )
                 await self.renko_trade_repo.record_exit(
                     trade_id=trade_id,
@@ -961,44 +997,53 @@ class TradingEngine:
                 self.logger.info(f"[RENKO_ICHIMOKU] DATABASE: persisted exit trade_id={trade_id}")
         self.last_db_operation_time = datetime.now(timezone.utc)
 
-    async def _backfill_renko_db_if_needed(self) -> None:
+    async def _backfill_renko_db_if_needed(self, runtime: RenkoIchimokuRuntime) -> None:
         """If Renko has an open position in state but no ACTIVE DB row, backfill entry."""
-        if not self.renko_runtime or not self.db_manager.is_connected:
+        if not self.db_manager.is_connected:
             return
-        st = self.renko_runtime.state
+        st = runtime.state
         if st.position == 0:
             return
         try:
             async with asyncio.timeout(self.settings.db_timeout_seconds):
-                open_trade = await self.renko_trade_repo.get_open_trade()
+                open_trade = await self.renko_trade_repo.get_open_trade(
+                    symbol=runtime.symbol,
+                    strategy_name=runtime.strategy_code,
+                )
                 if open_trade:
                     if not st.active_trade_id:
                         st.active_trade_id = open_trade.trade_id
-                        self.renko_runtime.store.save(st)
+                        runtime.store.save(st)
                     return
                 brick_index = st.last_traded_brick_index or 0
-                trade_id = st.active_trade_id or make_renko_trade_id(brick_index)
+                trade_id = st.active_trade_id or make_renko_trade_id(
+                    brick_index, instance_id=runtime.instance_id
+                )
                 if not st.entry_price:
                     self.logger.warning(
-                        "[RENKO_ICHIMOKU] DATABASE: open position in state without entry_price; skip backfill."
+                        f"[RENKO_{runtime.instance_id.upper()}] DATABASE: open position in state "
+                        "without entry_price; skip backfill."
                     )
                     return
                 from src.core.models.order import Order, OrderSide, OrderState, OrderType
+                from src.strategies.renko_ichimoku.runtime import deterministic_client_order_id
 
                 action_kind = "enter_long" if st.position > 0 else "enter_short"
                 synth_brick = type("B", (), {"index": brick_index, "close": st.last_brick_close or st.entry_price})()
                 synth_order = Order(
                     order_id=str(st.entry_order_id or f"backfill-{trade_id}"),
-                    client_order_id=f"RI{brick_index}EL" if st.position > 0 else f"RI{brick_index}ES",
-                    instrument_id=str(st.instrument_id or self.renko_runtime.instrument_id),
-                    symbol=st.resolved_symbol or self.renko_runtime.symbol,
+                    client_order_id=deterministic_client_order_id(
+                        brick_index, action_kind, runtime.order_id_prefix
+                    ),
+                    instrument_id=str(st.instrument_id or runtime.instrument_id),
+                    symbol=st.resolved_symbol or runtime.symbol,
                     side=OrderSide.BUY if st.position > 0 else OrderSide.SELL,
                     order_type=OrderType.MARKET,
-                    quantity=self.settings.renko_ichimoku_position_size,
-                    filled_quantity=self.settings.renko_ichimoku_position_size,
+                    quantity=runtime.position_size,
+                    filled_quantity=runtime.position_size,
                     average_fill_price=st.entry_price,
                     state=OrderState.FILLED,
-                    strategy_id="renko_ichimoku",
+                    strategy_id=rt.strategy_code,
                 )
                 await self.renko_trade_repo.record_entry(
                     trade_id=trade_id,
@@ -1007,29 +1052,40 @@ class TradingEngine:
                     action_kind=action_kind,
                     action_reason="startup_backfill",
                     account_name=self.settings.renko_ichimoku_account,
-                    symbol=self.renko_runtime.symbol,
-                    product_id=str(self.renko_runtime.instrument_id),
-                    quantity=self.settings.renko_ichimoku_position_size,
+                    symbol=runtime.symbol,
+                    product_id=str(runtime.instrument_id),
+                    quantity=runtime.position_size,
+                    config_snapshot={
+                        "instance_id": runtime.instance_id,
+                        "box_size": runtime.box_size,
+                    },
+                    strategy_name=runtime.strategy_code,
                 )
                 st.active_trade_id = trade_id
                 if not st.entry_time:
                     st.entry_time = time.time()
-                self.renko_runtime.store.save(st)
-                self.logger.info(f"[RENKO_ICHIMOKU] DATABASE: backfilled open entry trade_id={trade_id}")
+                runtime.store.save(st)
+                self.logger.info(
+                    f"[RENKO_{runtime.instance_id.upper()}] DATABASE: backfilled open entry trade_id={trade_id}"
+                )
         except Exception as e:
             self.logger.warning(
-                f"[RENKO_ICHIMOKU] DATABASE: open-position backfill failed (trading continues): {e}"
+                f"[RENKO_{runtime.instance_id.upper()}] DATABASE: open-position backfill failed "
+                f"(trading continues): {e}"
             )
 
-    async def _close_orphan_renko_db_trade_if_flat(self) -> None:
+    async def _close_orphan_renko_db_trade_if_flat(self, runtime: RenkoIchimokuRuntime) -> None:
         """Close ACTIVE Renko DB row when runtime state is already flat (e.g. failed manual-close persist)."""
-        if not self.renko_runtime or not self.db_manager.is_connected:
+        if not self.db_manager.is_connected:
             return
-        if self.renko_runtime.state.position != 0:
+        if runtime.state.position != 0:
             return
         try:
             async with asyncio.timeout(self.settings.db_timeout_seconds):
-                open_trade = await self.renko_trade_repo.get_open_trade()
+                open_trade = await self.renko_trade_repo.get_open_trade(
+                    symbol=runtime.symbol,
+                    strategy_name=runtime.strategy_code,
+                )
                 if not open_trade:
                     return
                 trade_dict = await self.renko_trade_repo.trade_to_dict(open_trade)
@@ -1047,12 +1103,12 @@ class TradingEngine:
                 local_side = 1 if leg_type == "LONG" else -1
                 cfg = trade_dict.get("strategy_config") or {}
                 entry_order_id = cfg.get("entry_order_id")
-                exit_order_id = self.renko_runtime.state.entry_order_id
+                exit_order_id = runtime.state.entry_order_id
                 exit_price = None
-                if self.renko_adapter and self.renko_runtime.instrument_id:
+                if self.renko_adapter and runtime.instrument_id:
                     close_side = "sell" if local_side > 0 else "buy"
                     fills = await self.renko_adapter.get_recent_fills_for_product(
-                        instrument_id=str(self.renko_runtime.instrument_id),
+                        instrument_id=str(runtime.instrument_id),
                         side=close_side,
                         page_size=10,
                     )
@@ -1082,11 +1138,12 @@ class TradingEngine:
                     entry_price=entry_price,
                     entry_time=entry_time,
                     trade_id=open_trade.trade_id,
-                    runtime=self.renko_runtime,
+                    runtime=runtime,
                 )
         except Exception as e:
             self.logger.warning(
-                f"[RENKO_ICHIMOKU] DATABASE: orphan Renko trade close failed (trading continues): {e}"
+                f"[RENKO_{runtime.instance_id.upper()}] DATABASE: orphan Renko trade close failed "
+                f"(trading continues): {e}"
             )
 
     def get_readiness(self) -> Dict[str, Any]:
@@ -1205,7 +1262,10 @@ class TradingEngine:
                     "account": self.settings.existing_strategy_account,
                     "active": self.strategy.is_active if self.settings.existing_strategy_enabled else False,
                 },
-                "renko_ichimoku": None if not self.renko_runtime else self.renko_runtime.snapshot(),
+                **{
+                    rt.strategy_code: rt.snapshot()
+                    for rt in self.renko_runtimes
+                },
             },
             "alerts": {
                 "recent_count": len(self.alert_service.get_recent_alerts()),

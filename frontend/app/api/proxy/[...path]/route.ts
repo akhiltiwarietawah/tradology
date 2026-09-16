@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +34,13 @@ async function handleProxy(
     headers["X-API-Key"] = serverApiKey;
   }
 
+  if (process.env.AUTH_DISABLED !== "true") {
+    const session = await getServerSession(authOptions);
+    if (session?.user?.email) {
+      headers["X-User-Email"] = session.user.email;
+    }
+  }
+
   try {
     const fetchOptions: RequestInit = {
       method: request.method,
@@ -52,8 +61,20 @@ async function handleProxy(
 
     const response = await fetch(targetUrl, fetchOptions);
 
-    let data: any;
     const contentType = response.headers.get("content-type") || "";
+
+    if (contentType.includes("text/event-stream") && response.body) {
+      return new NextResponse(response.body, {
+        status: response.status,
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+        },
+      });
+    }
+
+    let data: any;
     if (contentType.includes("application/json")) {
       data = await response.json();
     } else {

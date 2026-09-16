@@ -63,14 +63,21 @@ def create_router(engine) -> APIRouter:
         }
 
     @router.get("/renko/trades", dependencies=[Depends(verify_auth)])
-    async def get_renko_trades(limit: int = 50) -> Dict[str, Any]:
-        """Renko Ichimoku trade history from PostgreSQL."""
+    async def get_renko_trades(
+        limit: int = 50,
+        strategy_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Renko Ichimoku trade history from PostgreSQL (filter by strategy_name)."""
         if not engine.db_manager.is_connected:
-            return {"connected": False, "open_trade": None, "trades": []}
-        open_row = await engine.renko_trade_repo.get_open_trade()
-        rows = await engine.renko_trade_repo.list_trades(limit=min(limit, 200))
+            return {"connected": False, "open_trade": None, "trades": [], "strategy_name": strategy_name}
+        open_row = await engine.renko_trade_repo.get_open_trade(strategy_name=strategy_name)
+        rows = await engine.renko_trade_repo.list_trades(
+            limit=min(limit, 200),
+            strategy_name=strategy_name,
+        )
         return {
             "connected": True,
+            "strategy_name": strategy_name,
             "open_trade": await engine.renko_trade_repo.trade_to_dict(open_row) if open_row else None,
             "trades": [await engine.renko_trade_repo.trade_to_dict(r) for r in rows],
         }
@@ -127,5 +134,15 @@ def create_router(engine) -> APIRouter:
         """Engage emergency kill switch to halt all trading."""
         engine.risk_manager.activate_kill_switch()
         return {"status": "KILL_SWITCH_ACTIVATED", "message": "All trading halted."}
+
+    # Platform layer (multi-user accounts, strategies, subscriptions)
+    from src.api.platform_routes import create_platform_router
+
+    platform_router = create_platform_router(
+        engine,
+        getattr(engine, "account_sync_service", None),
+        getattr(engine, "runtime_manager", None),
+    )
+    router.include_router(platform_router)
 
     return router

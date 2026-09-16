@@ -8,18 +8,42 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.routes import create_router
 from src.api.security import SecurityHeadersMiddleware, RateLimitMiddleware
 from src.engine import TradingEngine
+from src.platform.sync.account_sync_service import AccountSyncService
+from src.platform.sync.event_hub import PlatformEventHub
+from src.platform.sync.scheduler import AccountSyncScheduler
+from src.platform.runtime.manager import StrategyRuntimeManager
 
 
 def create_app(engine: Optional[TradingEngine] = None) -> FastAPI:
     trading_engine = engine or TradingEngine()
     settings = trading_engine.settings
 
+    event_hub = PlatformEventHub()
+    account_sync_service = AccountSyncService(trading_engine.db_manager, event_hub)
+    runtime_manager = StrategyRuntimeManager(
+        trading_engine.db_manager,
+        settings,
+        event_hub=event_hub,
+        legacy_engine=trading_engine,
+    )
+    sync_scheduler = AccountSyncScheduler(
+        account_sync_service,
+        interval_seconds=getattr(settings, "platform_sync_interval_seconds", 60),
+    )
+    trading_engine.account_sync_service = account_sync_service
+    trading_engine.platform_event_hub = event_hub
+    trading_engine.runtime_manager = runtime_manager
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Startup
         await trading_engine.start()
+        await sync_scheduler.start()
+        await runtime_manager.recover_on_startup()
         yield
         # Shutdown
+        await runtime_manager.shutdown_all()
+        await sync_scheduler.stop()
         await trading_engine.stop()
 
     app = FastAPI(
@@ -50,7 +74,7 @@ def create_app(engine: Optional[TradingEngine] = None) -> FastAPI:
         allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type", "X-API-Key", "Authorization"],
+        allow_headers=["Content-Type", "X-API-Key", "Authorization", "X-User-Email"],
     )
 
     # 4. Public Health & Readiness Endpoints
@@ -68,5 +92,8 @@ def create_app(engine: Optional[TradingEngine] = None) -> FastAPI:
     router = create_router(trading_engine)
     app.include_router(router)
     app.state.engine = trading_engine
+    app.state.account_sync_service = account_sync_service
+    app.state.platform_event_hub = event_hub
+    app.state.runtime_manager = runtime_manager
 
     return app

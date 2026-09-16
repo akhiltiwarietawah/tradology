@@ -14,6 +14,12 @@ from src.execution.execution_engine import ExecutionEngine
 from src.execution.order_manager import OrderManager
 from src.strategies.renko_ichimoku.ichimoku import IncrementalIchimoku
 from src.strategies.renko_ichimoku.params import RENKO_ICHIMOKU_FIXED_PARAMS
+from src.strategies.renko_ichimoku.position_sizing import (
+    apply_exit_to_sizing_equity,
+    compute_realized_pnl_usd,
+    contracts_from_sizing_equity,
+    is_valid_sizing_mode,
+)
 from src.strategies.renko_ichimoku.prefix_logger import PrefixLogger
 from src.strategies.renko_ichimoku.renko import TraditionalRenko, ConfirmedBrick
 from src.strategies.renko_ichimoku.signals import evaluate_confirmed_brick, SignalAction
@@ -110,9 +116,10 @@ def normalized_local_side(position: int) -> int:
 MANUAL_CLOSE_REASON = "Position manually closed (exchange flat, local state was open)."
 
 
-def deterministic_client_order_id(brick_index: int, action_kind: str) -> str:
+def deterministic_client_order_id(brick_index: int, action_kind: str, instance_prefix: str = "") -> str:
     code = ACTION_CODES.get(action_kind, action_kind[:2].upper())
-    return f"RI{int(brick_index)}{code}"[:32]
+    prefix = (instance_prefix or "").upper()[:4]
+    return f"RI{prefix}{int(brick_index)}{code}"[:32]
 
 
 POSITION_RECONCILE_INTERVAL_SECONDS = 30.0
@@ -147,18 +154,30 @@ class RenkoIchimokuRuntime:
         fill_persister: Optional[Callable[..., Awaitable[None]]] = None,
         manual_close_persister: Optional[Callable[..., Awaitable[None]]] = None,
         contract_value: float = 0.01,
+        box_size: float = RENKO_ICHIMOKU_FIXED_PARAMS.box_size,
+        instance_id: str = "eth",
+        strategy_code: str = "renko_ichimoku_eth",
+        position_sizing_mode: str = "fixed",
+        sizing_base_usd: float = 100.0,
+        margin_pct: float = 0.25,
+        leverage: float = 10.0,
+        profit_retain_pct: float = 0.5,
     ):
         self.account_name = account_name
+        self.instance_id = instance_id
+        self.strategy_code = strategy_code
+        self.box_size = float(box_size)
         self.configured_symbol = symbol
         self.symbol = symbol
         self.position_size = float(position_size)
         self.candle_resolution = candle_resolution
+        self.order_id_prefix = instance_id.upper()[:4]
         self.execution_engine = execution_engine
         self.order_manager = order_manager
         self.candle_source = candle_source
         self.product_source = product_source
         self.exchange_ops = exchange_ops
-        self.logger = PrefixLogger(logger, self.TAG)
+        self.logger = PrefixLogger(logger, f"RENKO_{self.instance_id.upper()}")
         self.dry_run = dry_run
         self.kill_switch = kill_switch
         self.now_fn = now_fn
@@ -167,14 +186,20 @@ class RenkoIchimokuRuntime:
         self.fill_persister = fill_persister
         self.manual_close_persister = manual_close_persister
         self.contract_value = float(contract_value)
+        self.position_sizing_mode = (position_sizing_mode or "fixed").strip().lower()
+        self.sizing_base_usd = float(sizing_base_usd)
+        self.margin_pct = float(margin_pct)
+        self.leverage = float(leverage)
+        self.profit_retain_pct = float(profit_retain_pct)
         self._last_position_reconcile_ts = 0.0
+        self._pending_order_quantity: float = 0.0
 
         self.store = RenkoIchimokuStateStore(state_file, self.logger)
         self.state = self.store.load()
         self.state.account = account_name
         self.state.symbol = symbol
 
-        self.renko = TraditionalRenko(box_size=RENKO_ICHIMOKU_FIXED_PARAMS.box_size)
+        self.renko = TraditionalRenko(box_size=self.box_size)
         self.ichimoku = IncrementalIchimoku()
         self.instrument_id: Optional[str] = self.state.instrument_id
         self._started = False
@@ -184,6 +209,74 @@ class RenkoIchimokuRuntime:
     @property
     def position(self) -> int:
         return self.state.position
+
+    @property
+    def is_dynamic_sizing(self) -> bool:
+        return self.position_sizing_mode == "dynamic"
+
+    def _expected_open_quantity(self) -> float:
+        if self.is_dynamic_sizing and self.state.open_quantity is not None:
+            return float(self.state.open_quantity)
+        return float(self.position_size)
+
+    def _ensure_sizing_equity_initialized(self) -> None:
+        if not self.is_dynamic_sizing:
+            return
+        if self.state.sizing_equity is None or self.state.sizing_equity <= 0:
+            self.state.sizing_equity = self.sizing_base_usd
+            self.logger.info(
+                f"Dynamic sizing equity initialized to ${self.state.sizing_equity:.2f} "
+                f"(RENKO_ICHIMOKU_SIZING_BASE_USD)."
+            )
+
+    def _quantity_for_action(self, action_kind: str, brick: ConfirmedBrick) -> float:
+        if action_kind in ("exit_long", "exit_short"):
+            qty = self._expected_open_quantity()
+            if qty <= 0:
+                qty = float(self.position_size)
+            return qty
+        if not self.is_dynamic_sizing:
+            return float(self.position_size)
+        self._ensure_sizing_equity_initialized()
+        equity = float(self.state.sizing_equity or 0.0)
+        mark = float(brick.close)
+        contracts = contracts_from_sizing_equity(
+            equity,
+            self.margin_pct,
+            self.leverage,
+            mark,
+            self.contract_value,
+        )
+        return float(contracts)
+
+    def _update_sizing_after_exit(
+        self,
+        entry_price: float,
+        exit_price: float,
+        quantity: float,
+        position_side: int,
+    ) -> None:
+        if not self.is_dynamic_sizing:
+            return
+        pnl = compute_realized_pnl_usd(
+            entry_price,
+            exit_price,
+            quantity,
+            self.contract_value,
+            position_side,
+        )
+        prev = float(self.state.sizing_equity or self.sizing_base_usd)
+        new_eq = apply_exit_to_sizing_equity(prev, pnl, self.profit_retain_pct)
+        self.state.last_realized_pnl = pnl
+        self.state.sizing_equity = max(0.0, new_eq)
+        retained = pnl * self.profit_retain_pct if pnl > 0 else pnl
+        self.logger.info(
+            f"Dynamic sizing exit pnl=${pnl:.4f} sizing_delta=${retained:.4f} "
+            f"sizing_equity ${prev:.2f} -> ${self.state.sizing_equity:.2f} "
+            f"(profit_retain_pct={self.profit_retain_pct})"
+        )
+        if self.state.sizing_equity <= 0:
+            self._halt("Dynamic sizing equity <= 0 after exit. No further entries until funded.")
 
     def _halt(self, reason: str) -> None:
         self.state.orders_halted = True
@@ -205,14 +298,31 @@ class RenkoIchimokuRuntime:
         self.store.save(self.state)
 
     async def start(self) -> None:
-        if self.position_size < 0:
-            self._halt(f"RENKO_ICHIMOKU_POSITION_SIZE is negative ({self.position_size}).")
-            return
-        if self.position_size > 0 and abs(self.position_size - round(self.position_size)) > 1e-6:
+        if not is_valid_sizing_mode(self.position_sizing_mode):
             self._halt(
-                f"RENKO_ICHIMOKU_POSITION_SIZE={self.position_size} is not a whole number of contracts."
+                f"Invalid position_sizing_mode={self.position_sizing_mode!r}. Use 'fixed' or 'dynamic'."
             )
             return
+        if self.is_dynamic_sizing:
+            if self.sizing_base_usd <= 0:
+                self._halt("RENKO_ICHIMOKU_SIZING_BASE_USD must be > 0 for dynamic sizing.")
+                return
+            if not (0 < self.margin_pct <= 1):
+                self._halt(f"RENKO_ICHIMOKU_MARGIN_PCT must be in (0, 1], got {self.margin_pct}.")
+                return
+            if self.leverage <= 0:
+                self._halt(f"RENKO_ICHIMOKU_LEVERAGE must be > 0, got {self.leverage}.")
+                return
+            self._ensure_sizing_equity_initialized()
+        else:
+            if self.position_size < 0:
+                self._halt(f"RENKO_ICHIMOKU_POSITION_SIZE is negative ({self.position_size}).")
+                return
+            if self.position_size > 0 and abs(self.position_size - round(self.position_size)) > 1e-6:
+                self._halt(
+                    f"RENKO_ICHIMOKU_POSITION_SIZE={self.position_size} is not a whole number of contracts."
+                )
+                return
 
         product = await self.product_source.resolve_perpetual(self.configured_symbol)
         if not product:
@@ -241,10 +351,16 @@ class RenkoIchimokuRuntime:
             return
         self.state.instrument_id = self.instrument_id
         self.state.resolved_symbol = resolved_symbol
+        sizing_note = (
+            f"dynamic equity=${self.state.sizing_equity:.2f} margin_pct={self.margin_pct} "
+            f"leverage={self.leverage}x retain={self.profit_retain_pct}"
+            if self.is_dynamic_sizing
+            else f"fixed_size={self.position_size}"
+        )
         self.logger.info(
             f"Started on account={self.account_name} configured_symbol={self.configured_symbol} "
-            f"order_symbol={self.symbol} instrument_id={self.instrument_id} size={self.position_size} "
-            f"resolution={self.candle_resolution} box={RENKO_ICHIMOKU_FIXED_PARAMS.box_size} "
+            f"order_symbol={self.symbol} instrument_id={self.instrument_id} sizing={sizing_note} "
+            f"resolution={self.candle_resolution} box={self.box_size} "
             f"Ichimoku {RENKO_ICHIMOKU_FIXED_PARAMS.tenkan}/{RENKO_ICHIMOKU_FIXED_PARAMS.kijun}/"
             f"{RENKO_ICHIMOKU_FIXED_PARAMS.span_b} disp={RENKO_ICHIMOKU_FIXED_PARAMS.cloud_displacement}"
         )
@@ -374,8 +490,15 @@ class RenkoIchimokuRuntime:
         if self.kill_switch and not str(action.kind).startswith("exit"):
             self.logger.warning("Kill switch set. Skipping new entry.")
             return True
-        if self.position_size <= 0:
-            self.logger.warning("RENKO_ICHIMOKU_POSITION_SIZE is 0. Signal logged, no order sent.")
+        order_qty = self._quantity_for_action(action.kind, brick)
+        if order_qty <= 0:
+            if self.is_dynamic_sizing:
+                self.logger.warning(
+                    f"Dynamic sizing computed 0 contracts (sizing_equity={self.state.sizing_equity}). "
+                    "Signal logged, no order sent."
+                )
+            else:
+                self.logger.warning("RENKO_ICHIMOKU_POSITION_SIZE is 0. Signal logged, no order sent.")
             return True
         if not self.instrument_id:
             self._halt("No instrument_id; cannot place order.")
@@ -399,7 +522,7 @@ class RenkoIchimokuRuntime:
         if self.kill_switch and reduce_only:
             self.logger.warning("Kill switch set. Reduce-only exit still allowed.")
 
-        cid = deterministic_client_order_id(brick.index, action.kind)
+        cid = deterministic_client_order_id(brick.index, action.kind, self.order_id_prefix)
         existing = self.order_manager.get_order_by_client_id(cid)
         if existing:
             self.logger.warning(f"Reusing existing local order for cid={cid} state={existing.state.value}")
@@ -410,14 +533,15 @@ class RenkoIchimokuRuntime:
             self._halt(f"Duplicate client_order_id {cid} without a local fill. Manual check required.")
             return False
 
+        self._pending_order_quantity = float(order_qty)
         req = OrderRequest(
             instrument_id=self.instrument_id,
             symbol=self.symbol,
             side=side,
             order_type=OrderType.MARKET,
-            quantity=self.position_size,
+            quantity=self._pending_order_quantity,
             client_order_id=cid,
-            strategy_id="renko_ichimoku",
+            strategy_id=self.strategy_code,
             leg_id=action.kind,
             reduce_only=reduce_only,
         )
@@ -428,8 +552,9 @@ class RenkoIchimokuRuntime:
 
         self.logger.info(
             f"Order submit action={action.kind} reason={action.reason} account={self.account_name} "
-            f"symbol={self.symbol} instrument_id={self.instrument_id} qty={self.position_size} "
-            f"side={side.value} reduce_only={reduce_only} cid={cid} brick={brick.index}"
+            f"symbol={self.symbol} instrument_id={self.instrument_id} qty={self._pending_order_quantity} "
+            f"sizing_equity={self.state.sizing_equity} side={side.value} reduce_only={reduce_only} "
+            f"cid={cid} brick={brick.index}"
         )
         if self.dry_run:
             self.logger.info("DRY_RUN: not sending order to exchange.")
@@ -440,10 +565,10 @@ class RenkoIchimokuRuntime:
                 symbol=self.symbol,
                 side=side,
                 order_type=OrderType.MARKET,
-                quantity=self.position_size,
-                filled_quantity=self.position_size,
+                quantity=self._pending_order_quantity,
+                filled_quantity=self._pending_order_quantity,
                 state=OrderState.FILLED,
-                strategy_id="renko_ichimoku",
+                strategy_id=self.strategy_code,
                 average_fill_price=brick.close,
             )
             self.order_manager.record_order(order)
@@ -481,10 +606,11 @@ class RenkoIchimokuRuntime:
             return False
 
         filled = float(order.filled_quantity or 0.0)
-        if order.state == OrderState.PARTIALLY_FILLED or (filled > 0 and filled + 1e-9 < self.position_size and not order.is_filled):
+        requested = self._pending_order_quantity
+        if order.state == OrderState.PARTIALLY_FILLED or (filled > 0 and filled + 1e-9 < requested and not order.is_filled):
             self._halt(
                 f"Partial fill on {action.kind} cid={cid} order_id={order.order_id} "
-                f"filled={filled} requested={self.position_size}. Trading halted."
+                f"filled={filled} requested={requested}. Trading halted."
             )
             return False
 
@@ -520,24 +646,32 @@ class RenkoIchimokuRuntime:
 
     def _apply_fill(self, action_kind: str, order: Order, brick: ConfirmedBrick) -> None:
         fill_px = order.average_fill_price or brick.close
+        filled_qty = float(order.filled_quantity or self._pending_order_quantity or 0.0)
         if action_kind in ("exit_long", "exit_short"):
+            prev_side = 1 if action_kind == "exit_long" else -1
+            entry_px = float(self.state.entry_price or fill_px)
+            exit_qty = float(self.state.open_quantity or filled_qty or self._expected_open_quantity())
+            self._update_sizing_after_exit(entry_px, float(fill_px), exit_qty, prev_side)
             self.state.position = 0
             self.state.entry_price = None
             self.state.entry_order_id = order.order_id
             self.state.active_trade_id = None
             self.state.entry_time = None
+            self.state.open_quantity = None
         elif action_kind == "enter_long":
             self.state.position = 1
             self.state.entry_price = fill_px
             self.state.entry_order_id = order.order_id
-            self.state.active_trade_id = make_renko_trade_id(brick.index)
+            self.state.active_trade_id = make_renko_trade_id(brick.index, instance_id=self.instance_id)
             self.state.entry_time = self.now_fn()
+            self.state.open_quantity = filled_qty
         elif action_kind == "enter_short":
             self.state.position = -1
             self.state.entry_price = fill_px
             self.state.entry_order_id = order.order_id
-            self.state.active_trade_id = make_renko_trade_id(brick.index)
+            self.state.active_trade_id = make_renko_trade_id(brick.index, instance_id=self.instance_id)
             self.state.entry_time = self.now_fn()
+            self.state.open_quantity = filled_qty
         self.logger.info(
             f"Fill applied action={action_kind} new_pos={self.state.position} "
             f"fill_px={fill_px} order_id={order.order_id} cid={order.client_order_id}"
@@ -642,9 +776,11 @@ class RenkoIchimokuRuntime:
             )
             return
         if local_side != 0 and ex_side == local_side:
-            if self.position_size > 0 and abs(abs(signed) - self.position_size) > 1e-6:
+            expected_qty = self._expected_open_quantity()
+            if expected_qty > 0 and abs(abs(signed) - expected_qty) > 1e-6:
                 self._halt(
-                    f"Exchange size {signed} does not match RENKO_ICHIMOKU_POSITION_SIZE={self.position_size}."
+                    f"Exchange size {signed} does not match expected open quantity={expected_qty} "
+                    f"(mode={self.position_sizing_mode})."
                 )
                 return
             if local_side != local:
@@ -736,10 +872,15 @@ class RenkoIchimokuRuntime:
         prev_trade_id = self.state.active_trade_id
         prev_entry = self.state.entry_price
         prev_entry_time = self.state.entry_time
+        prev_side = local_side
+        prev_qty = float(self.state.open_quantity or self._expected_open_quantity())
+        if prev_entry and exit_price and prev_qty > 0:
+            self._update_sizing_after_exit(float(prev_entry), float(exit_price), prev_qty, prev_side)
         self.state.position = 0
         self.state.entry_price = None
         self.state.active_trade_id = None
         self.state.entry_time = None
+        self.state.open_quantity = None
         if exit_order_id:
             self.state.entry_order_id = str(exit_order_id)
         self._clear_in_flight()
@@ -807,7 +948,7 @@ class RenkoIchimokuRuntime:
             order_type=OrderType.MARKET,
             quantity=float(qty),
             client_order_id=cid,
-            strategy_id="renko_ichimoku",
+            strategy_id=self.strategy_code,
             leg_id="flatten",
             reduce_only=True,
         )
@@ -837,6 +978,9 @@ class RenkoIchimokuRuntime:
     def snapshot(self) -> Dict[str, Any]:
         return {
             "enabled": True,
+            "instance_id": self.instance_id,
+            "strategy_code": self.strategy_code,
+            "box_size": self.box_size,
             "account": self.account_name,
             "symbol": self.symbol,
             "configured_symbol": self.configured_symbol,
@@ -848,6 +992,13 @@ class RenkoIchimokuRuntime:
             "last_processed_candle_time": self.state.last_processed_candle_time,
             "instrument_id": self.instrument_id,
             "position_size": self.position_size,
+            "position_sizing_mode": self.position_sizing_mode,
+            "sizing_equity": self.state.sizing_equity,
+            "open_quantity": self.state.open_quantity,
+            "last_realized_pnl": self.state.last_realized_pnl,
+            "margin_pct": self.margin_pct,
+            "leverage": self.leverage,
+            "profit_retain_pct": self.profit_retain_pct,
             "orders_halted": self.state.orders_halted,
             "halt_reason": self.state.halt_reason,
             "in_flight_client_order_id": self.state.in_flight_client_order_id,

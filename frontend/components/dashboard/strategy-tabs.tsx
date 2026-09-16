@@ -3,12 +3,17 @@
 import { cn } from "@/lib/utils";
 import { LayoutDashboard, Layers, CandlestickChart } from "lucide-react";
 
-export type StrategyTab = "overview" | "strangle" | "renko";
+export type StrategyTab =
+  | "overview"
+  | "strangle"
+  | "renko_eth"
+  | "renko_sol";
 
 interface StrategyTabsProps {
   activeTab: StrategyTab;
   onChange: (tab: StrategyTab) => void;
-  renkoEnabled?: boolean;
+  renkoEthEnabled?: boolean;
+  renkoSolEnabled?: boolean;
 }
 
 const tabs: Array<{
@@ -16,23 +21,37 @@ const tabs: Array<{
   label: string;
   shortLabel: string;
   icon: typeof LayoutDashboard;
+  renkoAsset?: "eth" | "sol";
 }> = [
   { id: "overview", label: "Overview", shortLabel: "All", icon: LayoutDashboard },
   { id: "strangle", label: "BTC Short Strangle", shortLabel: "Strangle", icon: Layers },
-  { id: "renko", label: "Renko Ichimoku", shortLabel: "Renko", icon: CandlestickChart },
+  {
+    id: "renko_eth",
+    label: "Renko ETH",
+    shortLabel: "ETH",
+    icon: CandlestickChart,
+    renkoAsset: "eth",
+  },
+  {
+    id: "renko_sol",
+    label: "Renko SOL",
+    shortLabel: "SOL",
+    icon: CandlestickChart,
+    renkoAsset: "sol",
+  },
 ];
 
 export function StrategyTabs({
   activeTab,
   onChange,
-  renkoEnabled = true,
+  renkoEthEnabled = false,
+  renkoSolEnabled = false,
 }: StrategyTabsProps) {
   return (
     <div className="flex flex-wrap gap-2 p-1 rounded-xl bg-secondary/30 border border-border/60">
       {tabs.map((tab) => {
-        if (tab.id === "renko" && !renkoEnabled) {
-          return null;
-        }
+        if (tab.renkoAsset === "eth" && !renkoEthEnabled) return null;
+        if (tab.renkoAsset === "sol" && !renkoSolEnabled) return null;
 
         const Icon = tab.icon;
         const isActive = activeTab === tab.id;

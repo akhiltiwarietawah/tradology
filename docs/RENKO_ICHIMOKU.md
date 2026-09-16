@@ -1,10 +1,10 @@
-# ETHUSDT Traditional Renko + Ichimoku (independent strategy)
+# Renko + Ichimoku (ETH / SOL — independent strategy)
 
-This strategy is **separate** from the BTC 0DTE short strangle. It has its own enable switch, account, state file, order IDs, and position. Short-strangle trading logic is not used here.
+This strategy is **separate** from the BTC 0DTE short strangle. Each symbol (ETH, SOL) has its own state file, order IDs, and position. Short-strangle trading logic is not used here.
 
-Renko box size and Ichimoku lengths are **fixed** (not for optimization):
+Ichimoku lengths are **fixed** (not for optimization):
 
-- Traditional Renko, box **$15**, Source **Close**
+- Traditional Renko, Source **Close** (per-symbol box size below)
 - Signals only on **confirmed** brick closes (no projections)
 - Tenkan **9**, Kijun **26**, Span B **52**, cloud displacement **26** bricks
 
@@ -13,7 +13,8 @@ Renko box size and Ichimoku lengths are **fixed** (not for optimization):
 | Variable | Default | Meaning |
 |---|---|---|
 | `EXISTING_STRATEGY_ENABLED` | `true` | BTC short strangle on/off |
-| `RENKO_ICHIMOKU_STRATEGY_ENABLED` | `false` | Renko Ichimoku on/off |
+| `RENKO_ICHIMOKU_STRATEGY_ENABLED` | `false` | ETH Renko (`renko_ichimoku_eth`) on/off |
+| `RENKO_ICHIMOKU_SOL_ENABLED` | `false` | SOL Renko (`renko_ichimoku_sol`) on/off — independent |
 
 ## Accounts
 
@@ -31,11 +32,28 @@ If `RENKO_ICHIMOKU_ACCOUNT` equals `EXISTING_STRATEGY_ACCOUNT`, both strategies 
 | Variable | Default | Meaning |
 |---|---|---|
 | `RENKO_ICHIMOKU_POSITION_SIZE` | `0` | Contracts to trade. **Not** `ORDER_QUANTITY`. `0` logs signals and sends no orders. |
-| `RENKO_ICHIMOKU_SYMBOL` | `ETHUSDT` | Perpetual symbol (Delta may list `ETHUSD`; the adapter tries aliases) |
+| `RENKO_ICHIMOKU_SYMBOL` | `ETHUSDT` | ETH perpetual symbol |
+| `RENKO_ICHIMOKU_BOX_SIZE` | `15` | ETH Renko box in USD |
 | `RENKO_ICHIMOKU_CANDLE_RESOLUTION` | `15m` | Closed-candle Close feed used to confirm bricks. Match your TradingView interval. |
-| `RENKO_ICHIMOKU_STATE_FILE` | `data/renko_ichimoku_state_{testnet\|live}.json` | Independent of `STATE_FILE` |
+| `RENKO_ICHIMOKU_STATE_FILE` | `data/renko_ichimoku_eth_state_{testnet\|live}.json` | ETH state (independent of `STATE_FILE`) |
+| `RENKO_ICHIMOKU_SOL_SYMBOL` | `SOLUSDT` | SOL perpetual symbol |
+| `RENKO_ICHIMOKU_SOL_BOX_SIZE` | `0.42` | SOL Renko box in USD (~0.5% at ~$84) |
+| `RENKO_ICHIMOKU_SOL_POSITION_SIZE` | `0` | SOL contracts. `0` = signal-only |
+| `RENKO_ICHIMOKU_SOL_STATE_FILE` | `data/renko_ichimoku_sol_state_{testnet\|live}.json` | SOL state |
 
-Logs use `[EXISTING]` and `[RENKO_ICHIMOKU]`.
+### Position sizing mode (ETH + SOL share these)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RENKO_ICHIMOKU_POSITION_SIZING_MODE` | `fixed` | `fixed` = use `*_POSITION_SIZE` contracts; `dynamic` = % equity sizing |
+| `RENKO_ICHIMOKU_SIZING_BASE_USD` | `100` | Initial virtual sizing equity when state has no `sizing_equity` yet |
+| `RENKO_ICHIMOKU_MARGIN_PCT` | `0.25` | Dynamic: margin per entry = `sizing_equity × 25%` |
+| `RENKO_ICHIMOKU_LEVERAGE` | `10` | Dynamic: notional = margin × leverage |
+| `RENKO_ICHIMOKU_PROFIT_RETAIN_PCT` | `0.5` | Dynamic: on a **win**, only 50% of realized PnL is added to `sizing_equity` (simulates 50% withdraw without moving funds). **Losses apply in full.** |
+
+**Dynamic mode** persists `sizing_equity` in each instance state file. On exit, realized PnL is computed from **exact entry/exit fills** × `open_quantity` × `contract_value` (same formula as trade DB). Next entry size = `floor(notional / (price × contract_value))` where `notional = sizing_equity × margin_pct × leverage`. Wallet balance is **not** used for sizing (so unrealized withdraw does not inflate size).
+
+Logs use `[EXISTING]`, `[RENKO_ETH]`, and `[RENKO_SOL]`.
 
 ## How to run
 
@@ -102,9 +120,9 @@ If Renko is disabled but the state file still shows an open position, the engine
 ## Rules (frozen)
 
 **Long in:** confirmed bullish brick close above both cloud boundaries and above Kijun.  
-**Long out:** confirmed brick close inside the cloud (do not wait for Kijun).  
+**Long out:** confirmed brick close inside the cloud **or** at/below Kijun (whichever is true).  
 **Short in:** confirmed bearish brick close below both cloud boundaries and below Kijun.  
-**Short out:** confirmed brick close at or above Kijun.  
+**Short out:** confirmed brick close inside the cloud **or** at/above Kijun (whichever is true).  
 One position; exit first, then opposite entry on the same confirmed brick if valid.
 
 ## Persistence (production)
