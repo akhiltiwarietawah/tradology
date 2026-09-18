@@ -230,6 +230,30 @@ class Settings(BaseSettings):
         default=False,
         description="Startup flatten for the SOL Renko instrument only.",
     )
+    renko_ichimoku_xrp_enabled: bool = Field(
+        default=False,
+        description="Enable the XRP Renko+Ichimoku instance alongside ETH/SOL.",
+    )
+    renko_ichimoku_xrp_symbol: str = Field(
+        default="XRPUSDT",
+        description="Delta perpetual symbol for the XRP Renko instance.",
+    )
+    renko_ichimoku_xrp_box_size: float = Field(
+        default=0.003,
+        description="Fixed USD Renko box size for XRP (~0.5% at ~$0.60).",
+    )
+    renko_ichimoku_xrp_position_size: float = Field(
+        default=0.0,
+        description="XRP Renko order size in contracts. 0 = signals only.",
+    )
+    renko_ichimoku_xrp_state_file: Optional[str] = Field(
+        default=None,
+        description="Independent state file for the XRP Renko instance.",
+    )
+    renko_ichimoku_xrp_flatten: bool = Field(
+        default=False,
+        description="Startup flatten for the XRP Renko instrument only.",
+    )
     renko_ichimoku_candle_resolution: str = Field(
         default="15m",
         description="Closed-candle Close feed used to confirm Renko bricks. Must match the intended chart interval.",
@@ -298,6 +322,8 @@ class Settings(BaseSettings):
             self.renko_ichimoku_state_file = f"{self.data_dir}/renko_ichimoku_eth_state_{env_suffix}.json"
         if not self.renko_ichimoku_sol_state_file:
             self.renko_ichimoku_sol_state_file = f"{self.data_dir}/renko_ichimoku_sol_state_{env_suffix}.json"
+        if not self.renko_ichimoku_xrp_state_file:
+            self.renko_ichimoku_xrp_state_file = f"{self.data_dir}/renko_ichimoku_xrp_state_{env_suffix}.json"
 
         # Ensure LIVE environment requires valid credentials unless dry_run is true
         if self.delta_env == Environment.LIVE and not self.dry_run:
@@ -366,13 +392,30 @@ class Settings(BaseSettings):
         return self.active_api_key, self.active_api_secret
 
     def has_any_renko_enabled(self) -> bool:
-        return bool(self.renko_ichimoku_strategy_enabled or self.renko_ichimoku_sol_enabled)
+        return bool(
+            self.renko_ichimoku_strategy_enabled
+            or self.renko_ichimoku_sol_enabled
+            or self.renko_ichimoku_xrp_enabled
+        )
+
+    def all_renko_state_files(self) -> List[str]:
+        """Default state paths for ETH, SOL, and XRP (used for disabled-strategy warnings)."""
+        env_suffix = "live" if self.delta_env == Environment.LIVE else "testnet"
+        return [
+            self.renko_ichimoku_state_file
+            or f"{self.data_dir}/renko_ichimoku_eth_state_{env_suffix}.json",
+            self.renko_ichimoku_sol_state_file
+            or f"{self.data_dir}/renko_ichimoku_sol_state_{env_suffix}.json",
+            self.renko_ichimoku_xrp_state_file
+            or f"{self.data_dir}/renko_ichimoku_xrp_state_{env_suffix}.json",
+        ]
 
     def renko_instance_configs(self) -> List["RenkoInstanceConfig"]:
-        """Build enabled Renko instances (ETH when strategy flag on; SOL when sol flag on)."""
+        """Build enabled Renko instances (ETH / SOL / XRP when their flags are on)."""
         from src.strategies.renko_ichimoku.instance_config import (
             RENKO_ETH_STRATEGY_CODE,
             RENKO_SOL_STRATEGY_CODE,
+            RENKO_XRP_STRATEGY_CODE,
             RenkoInstanceConfig,
         )
 
@@ -410,6 +453,20 @@ class Settings(BaseSettings):
                     state_file=self.renko_ichimoku_sol_state_file or "data/renko_ichimoku_sol_state.json",
                     candle_resolution=self.renko_ichimoku_candle_resolution,
                     flatten=self.renko_ichimoku_sol_flatten,
+                    **sizing_common,
+                )
+            )
+        if self.renko_ichimoku_xrp_enabled:
+            configs.append(
+                RenkoInstanceConfig(
+                    instance_id="xrp",
+                    strategy_code=RENKO_XRP_STRATEGY_CODE,
+                    symbol=self.renko_ichimoku_xrp_symbol,
+                    box_size=self.renko_ichimoku_xrp_box_size,
+                    position_size=self.renko_ichimoku_xrp_position_size,
+                    state_file=self.renko_ichimoku_xrp_state_file or "data/renko_ichimoku_xrp_state.json",
+                    candle_resolution=self.renko_ichimoku_candle_resolution,
+                    flatten=self.renko_ichimoku_xrp_flatten,
                     **sizing_common,
                 )
             )

@@ -7,13 +7,15 @@ export type StrategyTab =
   | "overview"
   | "strangle"
   | "renko_eth"
-  | "renko_sol";
+  | "renko_sol"
+  | "renko_xrp";
 
 interface StrategyTabsProps {
   activeTab: StrategyTab;
   onChange: (tab: StrategyTab) => void;
   renkoEthEnabled?: boolean;
   renkoSolEnabled?: boolean;
+  renkoXrpEnabled?: boolean;
 }
 
 const tabs: Array<{
@@ -21,7 +23,7 @@ const tabs: Array<{
   label: string;
   shortLabel: string;
   icon: typeof LayoutDashboard;
-  renkoAsset?: "eth" | "sol";
+  renkoAsset?: "eth" | "sol" | "xrp";
 }> = [
   { id: "overview", label: "Overview", shortLabel: "All", icon: LayoutDashboard },
   { id: "strangle", label: "BTC Short Strangle", shortLabel: "Strangle", icon: Layers },
@@ -39,6 +41,13 @@ const tabs: Array<{
     icon: CandlestickChart,
     renkoAsset: "sol",
   },
+  {
+    id: "renko_xrp",
+    label: "Renko XRP",
+    shortLabel: "XRP",
+    icon: CandlestickChart,
+    renkoAsset: "xrp",
+  },
 ];
 
 export function StrategyTabs({
@@ -46,12 +55,14 @@ export function StrategyTabs({
   onChange,
   renkoEthEnabled = false,
   renkoSolEnabled = false,
+  renkoXrpEnabled = false,
 }: StrategyTabsProps) {
   return (
     <div className="flex flex-wrap gap-2 p-1 rounded-xl bg-secondary/30 border border-border/60">
       {tabs.map((tab) => {
         if (tab.renkoAsset === "eth" && !renkoEthEnabled) return null;
         if (tab.renkoAsset === "sol" && !renkoSolEnabled) return null;
+        if (tab.renkoAsset === "xrp" && !renkoXrpEnabled) return null;
 
         const Icon = tab.icon;
         const isActive = activeTab === tab.id;

@@ -1,6 +1,6 @@
-# Renko + Ichimoku (ETH / SOL — independent strategy)
+# Renko + Ichimoku (ETH / SOL / XRP — independent strategies)
 
-This strategy is **separate** from the BTC 0DTE short strangle. Each symbol (ETH, SOL) has its own state file, order IDs, and position. Short-strangle trading logic is not used here.
+This strategy is **separate** from the BTC 0DTE short strangle. Each symbol (ETH, SOL, XRP) has its own state file, order IDs, and position. Short-strangle trading logic is not used here.
 
 Ichimoku lengths are **fixed** (not for optimization):
 
@@ -15,6 +15,7 @@ Ichimoku lengths are **fixed** (not for optimization):
 | `EXISTING_STRATEGY_ENABLED` | `true` | BTC short strangle on/off |
 | `RENKO_ICHIMOKU_STRATEGY_ENABLED` | `false` | ETH Renko (`renko_ichimoku_eth`) on/off |
 | `RENKO_ICHIMOKU_SOL_ENABLED` | `false` | SOL Renko (`renko_ichimoku_sol`) on/off — independent |
+| `RENKO_ICHIMOKU_XRP_ENABLED` | `false` | XRP Renko (`renko_ichimoku_xrp`) on/off — independent |
 
 ## Accounts
 
@@ -40,20 +41,24 @@ If `RENKO_ICHIMOKU_ACCOUNT` equals `EXISTING_STRATEGY_ACCOUNT`, both strategies 
 | `RENKO_ICHIMOKU_SOL_BOX_SIZE` | `0.42` | SOL Renko box in USD (~0.5% at ~$84) |
 | `RENKO_ICHIMOKU_SOL_POSITION_SIZE` | `0` | SOL contracts. `0` = signal-only |
 | `RENKO_ICHIMOKU_SOL_STATE_FILE` | `data/renko_ichimoku_sol_state_{testnet\|live}.json` | SOL state |
+| `RENKO_ICHIMOKU_XRP_SYMBOL` | `XRPUSDT` | XRP perpetual symbol |
+| `RENKO_ICHIMOKU_XRP_BOX_SIZE` | `0.003` | XRP Renko box in USD (~0.5% at ~$0.60) |
+| `RENKO_ICHIMOKU_XRP_POSITION_SIZE` | `0` | XRP contracts. `0` = signal-only |
+| `RENKO_ICHIMOKU_XRP_STATE_FILE` | `data/renko_ichimoku_xrp_state_{testnet\|live}.json` | XRP state |
 
-### Position sizing mode (ETH + SOL share these)
+### Position sizing mode (ETH + SOL + XRP share these)
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `RENKO_ICHIMOKU_POSITION_SIZING_MODE` | `fixed` | `fixed` = use `*_POSITION_SIZE` contracts; `dynamic` = % equity sizing |
 | `RENKO_ICHIMOKU_SIZING_BASE_USD` | `100` | Initial virtual `sizing_equity` on first run (or when state has none) |
-| `RENKO_ICHIMOKU_MARGIN_PCT` | `0.25` | Dynamic: **each** ETH/SOL entry uses `25%` of effective equity as margin (independent per signal) |
+| `RENKO_ICHIMOKU_MARGIN_PCT` | `0.25` | Dynamic: **each** entry uses `25%` of effective equity as margin (independent per signal) |
 | `RENKO_ICHIMOKU_LEVERAGE` | `10` | Dynamic: notional = margin × leverage |
 | `RENKO_ICHIMOKU_PROFIT_RETAIN_PCT` | `0.5` | Dynamic: on a **win**, only 50% of realized PnL is added to virtual `sizing_equity` (simulates 50% withdraw). **Losses apply in full.** |
 
-**Dynamic mode** sizes from virtual `sizing_equity` (starts at `SIZING_BASE_USD`), capped by live wallet on each entry: effective equity = `min(account_balance, virtual sizing_equity)`. Example: `$60` virtual base → `$15` margin per trade → `$150` notional at `10x` (ETH and SOL each use their own 25% slice when they signal). Virtual equity is adjusted after exits (50% profit retain). Contract size uses each product's real `contract_value` from Delta (e.g. ETH `0.01`, SOL `1`).
+**Dynamic mode** sizes from virtual `sizing_equity` (starts at `SIZING_BASE_USD`), capped by live wallet on each entry: effective equity = `min(account_balance, virtual sizing_equity)`. Example: `$60` virtual base → `$15` margin per trade → `$150` notional at `10x` (each asset uses its own 25% slice when it signals). Virtual equity is adjusted after exits (50% profit retain). Contract size uses each product's real `contract_value` from Delta (e.g. ETH `0.01`, SOL `1`, XRP per product spec).
 
-Logs use `[EXISTING]`, `[RENKO_ETH]`, and `[RENKO_SOL]`.
+Logs use `[EXISTING]`, `[RENKO_ETH]`, `[RENKO_SOL]`, and `[RENKO_XRP]`.
 
 ## How to run
 

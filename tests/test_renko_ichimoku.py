@@ -127,17 +127,20 @@ def test_engine_keeps_short_strangle_when_renko_disabled():
     assert engine.strategy.config.quantity == 1.0
 
 
-def test_renko_instance_configs_eth_and_sol():
+def test_renko_instance_configs_eth_sol_and_xrp():
     s = _settings(
         renko_ichimoku_strategy_enabled=True,
         renko_ichimoku_sol_enabled=True,
+        renko_ichimoku_xrp_enabled=True,
         renko_ichimoku_box_size=15.0,
         renko_ichimoku_sol_box_size=0.42,
+        renko_ichimoku_xrp_box_size=0.003,
         renko_ichimoku_position_size=1,
         renko_ichimoku_sol_position_size=30,
+        renko_ichimoku_xrp_position_size=100,
     )
     configs = s.renko_instance_configs()
-    assert len(configs) == 2
+    assert len(configs) == 3
     assert configs[0].instance_id == "eth"
     assert configs[0].strategy_code == "renko_ichimoku_eth"
     assert configs[0].box_size == 15.0
@@ -145,25 +148,34 @@ def test_renko_instance_configs_eth_and_sol():
     assert configs[1].strategy_code == "renko_ichimoku_sol"
     assert configs[1].box_size == 0.42
     assert configs[1].position_size == 30
+    assert configs[2].instance_id == "xrp"
+    assert configs[2].strategy_code == "renko_ichimoku_xrp"
+    assert configs[2].box_size == 0.003
+    assert configs[2].position_size == 100
 
 
-def test_engine_starts_eth_and_sol_runtimes():
+def test_engine_starts_eth_sol_and_xrp_runtimes():
     engine = TradingEngine(
         settings=_settings(
             existing_strategy_enabled=False,
             renko_ichimoku_strategy_enabled=True,
             renko_ichimoku_sol_enabled=True,
+            renko_ichimoku_xrp_enabled=True,
             existing_strategy_account="primary",
             renko_ichimoku_account="primary",
             renko_ichimoku_position_size=1,
             renko_ichimoku_sol_position_size=30,
+            renko_ichimoku_xrp_position_size=100,
+            renko_ichimoku_xrp_box_size=0.003,
         )
     )
-    assert len(engine.renko_runtimes) == 2
+    assert len(engine.renko_runtimes) == 3
     assert engine.renko_runtimes[0].instance_id == "eth"
     assert engine.renko_runtimes[0].box_size == 15.0
     assert engine.renko_runtimes[1].instance_id == "sol"
     assert engine.renko_runtimes[1].box_size == 0.42
+    assert engine.renko_runtimes[2].instance_id == "xrp"
+    assert engine.renko_runtimes[2].box_size == 0.003
 
 
 def test_deterministic_order_ids_include_instance_prefix():
@@ -171,6 +183,7 @@ def test_deterministic_order_ids_include_instance_prefix():
 
     assert deterministic_client_order_id(159, "enter_long", "SOL") == "RISOL159EL"
     assert deterministic_client_order_id(159, "enter_long", "ETH") == "RIETH159EL"
+    assert deterministic_client_order_id(159, "enter_long", "XRP") == "RIXRP159EL"
 
 
 def test_engine_wires_independent_managers_when_both_enabled():

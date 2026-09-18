@@ -30,6 +30,7 @@ import { PlatformPortfolioSection } from "@/components/platform/platform-portfol
 
 const RENKO_ETH = "renko_ichimoku_eth";
 const RENKO_SOL = "renko_ichimoku_sol";
+const RENKO_XRP = "renko_ichimoku_xrp";
 
 export default function DashboardPage() {
   const [activeTab, setActiveTab] = useState<StrategyTab>("overview");
@@ -52,26 +53,34 @@ export default function DashboardPage() {
   const strangleMetrics = usePerformanceMetrics({ strategy_name: "short_strangle" });
   const renkoEthMetrics = usePerformanceMetrics({ strategy_name: RENKO_ETH });
   const renkoSolMetrics = usePerformanceMetrics({ strategy_name: RENKO_SOL });
+  const renkoXrpMetrics = usePerformanceMetrics({ strategy_name: RENKO_XRP });
 
   const ethRenko = useRenkoTrades(50, RENKO_ETH);
   const solRenko = useRenkoTrades(50, RENKO_SOL);
+  const xrpRenko = useRenkoTrades(50, RENKO_XRP);
 
   const ethSnapshot = statusData?.strategies?.renko_ichimoku_eth;
   const solSnapshot = statusData?.strategies?.renko_ichimoku_sol;
+  const xrpSnapshot = statusData?.strategies?.renko_ichimoku_xrp;
   const renkoEthEnabled = !!ethSnapshot?.enabled;
   const renkoSolEnabled = !!solSnapshot?.enabled;
+  const renkoXrpEnabled = !!xrpSnapshot?.enabled;
 
   const showStrangle = activeTab === "overview" || activeTab === "strangle";
   const showRenkoEth =
     renkoEthEnabled && (activeTab === "overview" || activeTab === "renko_eth");
   const showRenkoSol =
     renkoSolEnabled && (activeTab === "overview" || activeTab === "renko_sol");
+  const showRenkoXrp =
+    renkoXrpEnabled && (activeTab === "overview" || activeTab === "renko_xrp");
 
   const activeMetrics =
     activeTab === "renko_eth"
       ? renkoEthMetrics
       : activeTab === "renko_sol"
       ? renkoSolMetrics
+      : activeTab === "renko_xrp"
+      ? renkoXrpMetrics
       : strangleMetrics;
 
   const handleRefreshAll = () => {
@@ -79,8 +88,10 @@ export default function DashboardPage() {
     strangleMetrics.refetch();
     renkoEthMetrics.refetch();
     renkoSolMetrics.refetch();
+    renkoXrpMetrics.refetch();
     ethRenko.refetch();
     solRenko.refetch();
+    xrpRenko.refetch();
   };
 
   const engineStatus = statusData?.engine?.status || "STOPPED";
@@ -93,6 +104,8 @@ export default function DashboardPage() {
       ? "RENKO ETH"
       : activeTab === "renko_sol"
       ? "RENKO SOL"
+      : activeTab === "renko_xrp"
+      ? "RENKO XRP"
       : activeTab === "strangle"
       ? "BTC STRANGLE"
       : "MULTI-STRATEGY";
@@ -102,6 +115,8 @@ export default function DashboardPage() {
       ? "Renko ETH Performance"
       : activeTab === "renko_sol"
       ? "Renko SOL Performance"
+      : activeTab === "renko_xrp"
+      ? "Renko XRP Performance"
       : activeTab === "strangle"
       ? "Strangle Performance"
       : "Portfolio Performance (Strangle)";
@@ -134,6 +149,7 @@ export default function DashboardPage() {
           onChange={setActiveTab}
           renkoEthEnabled={renkoEthEnabled}
           renkoSolEnabled={renkoSolEnabled}
+          renkoXrpEnabled={renkoXrpEnabled}
         />
 
         <div className="flex items-center gap-2 self-end xl:self-auto">
@@ -229,6 +245,10 @@ export default function DashboardPage() {
         <RenkoPanel snapshot={solSnapshot} isLoading={isStatusLoading} />
       )}
 
+      {showRenkoXrp && (
+        <RenkoPanel snapshot={xrpSnapshot} isLoading={isStatusLoading} />
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         <div className="lg:col-span-5">
           <RiskSafety status={statusData} isLoading={isStatusLoading} />
@@ -265,6 +285,16 @@ export default function DashboardPage() {
           isLoading={solRenko.isLoading}
           dbConnected={solRenko.dbConnected}
           title="Renko SOL Trade History"
+        />
+      )}
+
+      {showRenkoXrp && (
+        <RenkoTradeHistory
+          trades={xrpRenko.trades}
+          openTrade={xrpRenko.openTrade}
+          isLoading={xrpRenko.isLoading}
+          dbConnected={xrpRenko.dbConnected}
+          title="Renko XRP Trade History"
         />
       )}
 

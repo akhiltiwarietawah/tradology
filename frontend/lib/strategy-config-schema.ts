@@ -113,6 +113,28 @@ const SCHEMAS: Record<string, StrategyConfigSchema> = {
       },
     ],
   },
+  renko_ichimoku_xrp: {
+    strategyCode: "renko_ichimoku_xrp",
+    fields: [
+      {
+        key: "position_size",
+        label: "Position size (contracts)",
+        type: "number",
+        defaultValue: 100,
+        min: 0,
+        step: 1,
+      },
+      {
+        key: "allocation_pct",
+        label: "Capital allocation %",
+        type: "number",
+        defaultValue: 100,
+        min: 1,
+        max: 100,
+        step: 1,
+      },
+    ],
+  },
   // legacy alias
   renko_ichimoku: {
     strategyCode: "renko_ichimoku_eth",

@@ -169,6 +169,7 @@ export const SystemStatusSchema = z.object({
         .optional(),
       renko_ichimoku_eth: RenkoSnapshotSchema.optional(),
       renko_ichimoku_sol: RenkoSnapshotSchema.optional(),
+      renko_ichimoku_xrp: RenkoSnapshotSchema.optional(),
       renko_ichimoku: RenkoSnapshotSchema.optional(),
     })
     .optional(),

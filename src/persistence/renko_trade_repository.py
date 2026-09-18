@@ -18,9 +18,11 @@ from src.persistence.trade_repository import to_decimal, to_datetime
 RENKO_STRATEGY_NAME = "renko_ichimoku"  # legacy
 RENKO_ETH_STRATEGY_NAME = "renko_ichimoku_eth"
 RENKO_SOL_STRATEGY_NAME = "renko_ichimoku_sol"
+RENKO_XRP_STRATEGY_NAME = "renko_ichimoku_xrp"
 RENKO_STRATEGY_CODES = (
     RENKO_ETH_STRATEGY_NAME,
     RENKO_SOL_STRATEGY_NAME,
+    RENKO_XRP_STRATEGY_NAME,
     RENKO_STRATEGY_NAME,
 )
 RENKO_EXCHANGE = "delta_india_renko"

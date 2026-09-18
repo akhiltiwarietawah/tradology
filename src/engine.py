@@ -255,10 +255,7 @@ class TradingEngine:
         from pathlib import Path
         from src.strategies.renko_ichimoku.state import RenkoIchimokuStateStore
 
-        candidates = [
-            self.settings.renko_ichimoku_state_file,
-            self.settings.renko_ichimoku_sol_state_file,
-        ]
+        candidates = self.settings.all_renko_state_files()
         for path in candidates:
             if not path or not Path(path).exists():
                 continue
