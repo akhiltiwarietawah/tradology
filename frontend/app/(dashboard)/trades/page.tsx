@@ -1,97 +1,60 @@
 "use client";
 
+import { useState } from "react";
 import { Activity } from "lucide-react";
-import { PageHeader, EmptyState } from "@/components/ui/page-header";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import { usePlatformTrades } from "@/hooks/usePlatform";
-import { cn, formatCurrency, formatDate } from "@/lib/utils";
+import { PageHeader } from "@/components/ui/page-header";
+import { RenkoTradeHistory } from "@/components/dashboard/renko-trade-history";
+import { TradeHistory } from "@/components/dashboard/trade-history";
+import { useRenkoTrades } from "@/hooks/useRenkoTrades";
+import { usePerformanceMetrics } from "@/hooks/usePerformanceMetrics";
+import { ENGINE_STRATEGIES, type EngineStrategySlug } from "@/lib/engine-strategies";
+import { cn } from "@/lib/utils";
 
 export default function TradesPage() {
-  const { data, isLoading, isError } = usePlatformTrades({ limit: 100 });
-  const trades = data?.trades ?? [];
+  const [slug, setSlug] = useState<EngineStrategySlug>("eth");
+  const strategy = ENGINE_STRATEGIES.find((s) => s.slug === slug)!;
+  const renko = useRenkoTrades(100, strategy.code, strategy.kind === "renko");
+  const strangle = usePerformanceMetrics({ strategy_name: "short_strangle" });
 
   return (
     <div className="space-y-6">
       <PageHeader
         title="Trades"
-        description="Your attributed platform trades only. Legacy global engine trades are excluded."
+        description="One strategy at a time. Switch tabs to see that book's history only."
         icon={Activity}
       />
 
-      {isLoading && <Skeleton className="h-64 w-full rounded-xl" />}
-      {isError && (
-        <EmptyState title="Unable to load trades" description="Ensure platform database is connected." />
-      )}
+      <div className="flex flex-wrap gap-2">
+        {ENGINE_STRATEGIES.map((s) => (
+          <button
+            key={s.slug}
+            type="button"
+            onClick={() => setSlug(s.slug)}
+            className={cn(
+              "px-3 py-1.5 rounded-lg text-xs font-semibold border",
+              slug === s.slug
+                ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                : "text-muted-foreground border-border/60 hover:bg-secondary/50"
+            )}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
 
-      {!isLoading && !isError && trades.length === 0 && (
-        <EmptyState
-          title="Not available yet"
-          description="Attributed trades appear here after platform strategy execution with linked accounts."
+      {strategy.kind === "renko" ? (
+        <RenkoTradeHistory
+          trades={renko.trades}
+          openTrade={renko.openTrade}
+          isLoading={renko.isLoading}
+          dbConnected={renko.dbConnected}
+          title={strategy.label}
         />
-      )}
-
-      {!isLoading && !isError && trades.length > 0 && (
-        <Card className="bg-card/60 border-border/80">
-          <CardHeader className="py-3 px-4 border-b border-border/60">
-            <CardTitle className="text-xs font-semibold uppercase tracking-wider">
-              Platform Trades ({trades.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left font-mono text-xs">
-                <thead className="bg-secondary/30 text-muted-foreground border-b border-border/60 text-[10px] uppercase">
-                  <tr>
-                    <th className="py-2.5 px-4">Trade ID</th>
-                    <th className="py-2.5 px-4">Strategy</th>
-                    <th className="py-2.5 px-4">Opened</th>
-                    <th className="py-2.5 px-4 text-right">Entry</th>
-                    <th className="py-2.5 px-4 text-right">Exit</th>
-                    <th className="py-2.5 px-4 text-right">Realized P&L</th>
-                    <th className="py-2.5 px-4 text-right">Fees</th>
-                    <th className="py-2.5 px-4 text-center">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/40">
-                  {trades.map((trade) => {
-                    const positive = (trade.realized_pnl ?? 0) >= 0;
-                    return (
-                      <tr key={trade.trade_id} className="hover:bg-secondary/20">
-                        <td className="py-2.5 px-4">{trade.trade_id}</td>
-                        <td className="py-2.5 px-4">
-                          <Badge variant="outline" className="text-[9px]">
-                            {trade.strategy}
-                          </Badge>
-                        </td>
-                        <td className="py-2.5 px-4 text-muted-foreground">
-                          {trade.opened_at ? formatDate(trade.opened_at) : "—"}
-                        </td>
-                        <td className="py-2.5 px-4 text-right">{formatCurrency(trade.entry ?? 0)}</td>
-                        <td className="py-2.5 px-4 text-right">{formatCurrency(trade.exit ?? 0)}</td>
-                        <td
-                          className={cn(
-                            "py-2.5 px-4 text-right font-semibold",
-                            positive ? "text-emerald-400" : "text-rose-400",
-                          )}
-                        >
-                          {formatCurrency(trade.realized_pnl ?? 0)}
-                        </td>
-                        <td className="py-2.5 px-4 text-right">{formatCurrency(trade.fees ?? 0)}</td>
-                        <td className="py-2.5 px-4 text-center">
-                          <Badge variant="secondary" className="text-[9px]">
-                            {trade.status}
-                          </Badge>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
+      ) : (
+        <TradeHistory
+          trades={strangle.metrics?.cumulative_pnl_curve || []}
+          isLoading={strangle.isLoading}
+        />
       )}
     </div>
   );

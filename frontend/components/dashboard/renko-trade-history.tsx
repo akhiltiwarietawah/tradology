@@ -111,8 +111,10 @@ export function RenkoTradeHistory({
                   <th className="py-2.5 px-4 font-semibold">Trade ID</th>
                   <th className="py-2.5 px-4 font-semibold">Status</th>
                   <th className="py-2.5 px-4 font-semibold">Side</th>
+                  <th className="py-2.5 px-4 font-semibold">Qty</th>
                   <th className="py-2.5 px-4 font-semibold">Entry</th>
                   <th className="py-2.5 px-4 font-semibold">Exit</th>
+                  <th className="py-2.5 px-4 font-semibold">Fees</th>
                   <th className="py-2.5 px-4 font-semibold">Net P&amp;L</th>
                   <th className="py-2.5 px-4 font-semibold">Closed</th>
                 </tr>
@@ -133,8 +135,10 @@ export function RenkoTradeHistory({
                         </Badge>
                       </td>
                       <td className="py-2.5 px-4">{leg?.leg_type || "--"}</td>
+                      <td className="py-2.5 px-4">{leg?.quantity ?? "--"}</td>
                       <td className="py-2.5 px-4">{formatCurrency(leg?.entry_price)}</td>
                       <td className="py-2.5 px-4">{formatCurrency(leg?.exit_price)}</td>
+                      <td className="py-2.5 px-4 text-muted-foreground">{formatCurrency(trade.total_fees)}</td>
                       <td
                         className={`py-2.5 px-4 font-semibold ${
                           netPnl >= 0 ? "text-emerald-400" : "text-rose-400"

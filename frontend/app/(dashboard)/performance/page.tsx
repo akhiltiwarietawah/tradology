@@ -9,13 +9,21 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Select } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EquityCurveChart } from "@/components/charts/equity-curve-chart";
+import { PnlCharts } from "@/components/dashboard/pnl-charts";
+import { PerformanceOverview } from "@/components/dashboard/performance-overview";
 import { usePlatformPortfolioPerformance, usePlatformSubscriptions } from "@/hooks/usePlatform";
+import { usePerformanceMetrics } from "@/hooks/usePerformanceMetrics";
 import type { EquityRange } from "@/lib/api/platform-client";
+import { ENGINE_STRATEGIES, type EngineStrategySlug } from "@/lib/engine-strategies";
 import { cn, formatCurrency, formatPercent } from "@/lib/utils";
 
 export default function PerformancePage() {
   const [range, setRange] = useState<EquityRange>("1M");
   const [strategyFilter, setStrategyFilter] = useState("");
+  const [engineSlug, setEngineSlug] = useState<EngineStrategySlug>("eth");
+  const engine = ENGINE_STRATEGIES.find((s) => s.slug === engineSlug)!;
+  const engineMetrics = usePerformanceMetrics({ strategy_name: engine.code });
+
   const { data: subsData } = usePlatformSubscriptions();
   const { data, isLoading, isError } = usePlatformPortfolioPerformance({
     range,
@@ -39,37 +47,70 @@ export default function PerformancePage() {
     <div className="space-y-6">
       <PageHeader
         title="Performance"
-        description="User-scoped portfolio and strategy P&L from attributed platform ledger data."
+        description="Live engine P&L per strategy, then platform account equity from synced exchanges."
         icon={LineChart}
       />
 
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="space-y-1">
-          <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Strategy filter</p>
-          <Select
-            className="w-52"
-            value={strategyFilter}
-            onChange={(e) => setStrategyFilter(e.target.value)}
-          >
-            <option value="">All Strategies</option>
-            {subscribedCodes.map((code) => (
-              <option key={code} value={code}>
-                {code}
-              </option>
-            ))}
-          </Select>
+      <div className="space-y-3">
+        <div className="flex flex-wrap gap-2">
+          {ENGINE_STRATEGIES.map((s) => (
+            <button
+              key={s.slug}
+              type="button"
+              onClick={() => setEngineSlug(s.slug)}
+              className={cn(
+                "px-3 py-1.5 rounded-lg text-xs font-semibold border",
+                engineSlug === s.slug
+                  ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                  : "text-muted-foreground border-border/60 hover:bg-secondary/50"
+              )}
+            >
+              {s.shortLabel}
+            </button>
+          ))}
         </div>
+        <PerformanceOverview
+          metrics={engineMetrics.metrics}
+          isLoading={engineMetrics.isLoading}
+          title={`${engine.label} (engine)`}
+        />
+        <PnlCharts
+          title={`${engine.label} equity curve`}
+          metrics={engineMetrics.metrics}
+          isLoading={engineMetrics.isLoading}
+        />
       </div>
 
-      {isLoading && <Skeleton className="h-72 w-full rounded-xl" />}
-      {isError && (
-        <EmptyState title="Unable to load portfolio performance" description="Ensure platform database and account sync are available." />
-      )}
+      <div className="border-t border-border/60 pt-6 space-y-4">
+        <p className="text-xs uppercase tracking-wider text-muted-foreground">Platform accounts</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="space-y-1">
+            <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Strategy filter</p>
+            <Select
+              className="w-52"
+              value={strategyFilter}
+              onChange={(e) => setStrategyFilter(e.target.value)}
+            >
+              <option value="">All Strategies</option>
+              {subscribedCodes.map((code) => (
+                <option key={code} value={code}>
+                  {code}
+                </option>
+              ))}
+            </Select>
+          </div>
+        </div>
 
-      {!isLoading && !isError && (
-        <>
-          <div>
-            <p className="text-xs uppercase tracking-wider text-muted-foreground mb-3">Portfolio</p>
+        {isLoading && <Skeleton className="h-72 w-full rounded-xl" />}
+        {isError && (
+          <EmptyState
+            title="Unable to load portfolio performance"
+            description="Ensure platform database and account sync are available."
+          />
+        )}
+
+        {!isLoading && !isError && (
+          <>
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
               <MetricCard label="Total Equity (accounts)" value={formatCurrency(combined?.total_equity ?? 0)} />
               <MetricCard
@@ -107,33 +148,17 @@ export default function PerformancePage() {
                 }
               />
             </div>
-            <p className="text-[10px] text-muted-foreground mt-2">
-              Combined equity sums each exchange account once. Strategy realized P&L uses attributed trades only.
-            </p>
-          </div>
 
-          <EquityCurveChart
-            title="Account Equity Curve (combined)"
-            currency="USD"
-            points={combined?.equity_curve ?? []}
-            range={range}
-            onRangeChange={setRange}
-            isLoading={isLoading}
-          />
+            <EquityCurveChart
+              title="Account Equity Curve (combined)"
+              currency="USD"
+              points={combined?.equity_curve ?? []}
+              range={range}
+              onRangeChange={setRange}
+              isLoading={isLoading}
+            />
 
-          <div className="space-y-3">
-            <p className="text-xs uppercase tracking-wider text-muted-foreground">Strategy</p>
-            {strategies.length === 0 ? (
-              <EmptyState
-                title="Not available yet"
-                description="Subscribe and link exchange accounts to see strategy-scoped performance."
-                action={
-                  <Link href="/strategies" className="text-emerald-400 underline text-sm">
-                    Browse strategies
-                  </Link>
-                }
-              />
-            ) : (
+            {strategies.length > 0 && (
               <div className="grid gap-3">
                 {strategies.map((row: any) => (
                   <Card key={row.strategy_account_id} className="bg-card/50 border-border/70">
@@ -145,60 +170,21 @@ export default function PerformancePage() {
                             {row.strategy_code}
                           </Badge>
                         </div>
-                        <p className="text-[10px] text-muted-foreground mt-1">
-                          Strategy account {row.strategy_account_id.slice(0, 8)}…
-                        </p>
                       </div>
-                      <div className="grid grid-cols-3 gap-4 text-right">
-                        <div>
-                          <p className="text-[9px] uppercase text-muted-foreground">Realized P&L</p>
-                          <p className="text-sm font-mono font-semibold">
-                            {row.realized?.available
-                              ? formatCurrency(row.realized.realized_pnl ?? 0)
-                              : "Not available yet"}
-                          </p>
-                        </div>
-                        <div>
-                          <p className="text-[9px] uppercase text-muted-foreground">Unrealized P&L</p>
-                          <p className="text-sm font-mono font-semibold">
-                            {row.unrealized?.available
-                              ? formatCurrency(row.unrealized.unrealized_pnl ?? 0)
-                              : "Not available yet"}
-                          </p>
-                        </div>
-                        <div>
-                          <Link href={`/execution/${row.strategy_account_id}`} className="text-[10px] text-emerald-400 hover:underline">
-                            View runtime
-                          </Link>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {data?.accounts?.length > 0 && (
-            <div className="space-y-3">
-              <p className="text-xs uppercase tracking-wider text-muted-foreground">Account</p>
-              <div className="grid gap-3 md:grid-cols-2">
-                {data.accounts.map((acct: any) => (
-                  <Card key={acct.account_id} className="bg-card/50 border-border/70">
-                    <CardContent className="p-4">
-                      <p className="font-medium">{acct.label}</p>
-                      <p className="text-sm font-mono mt-1">{formatCurrency(acct.equity ?? 0)} equity</p>
-                      <Link href={`/accounts/${acct.account_id}`} className="text-[10px] text-emerald-400 hover:underline">
-                        View account
+                      <Link
+                        href={`/execution/${row.strategy_account_id}`}
+                        className="text-[10px] text-emerald-400 hover:underline"
+                      >
+                        View runtime
                       </Link>
                     </CardContent>
                   </Card>
                 ))}
               </div>
-            </div>
-          )}
-        </>
-      )}
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -220,7 +206,7 @@ function MetricCard({
           className={cn(
             "text-lg font-mono font-semibold mt-1",
             tone === "positive" && "text-emerald-400",
-            tone === "negative" && "text-rose-400",
+            tone === "negative" && "text-rose-400"
           )}
         >
           {value}

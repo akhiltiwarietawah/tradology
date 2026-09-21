@@ -87,24 +87,32 @@ export function Header() {
 
             <div className="hidden lg:flex items-center gap-2">
               {strangleActive && (
-                <Badge variant="success" className="text-[10px] py-0.5">
-                  STRANGLE LIVE
-                </Badge>
+                <Link href="/engine/strangle">
+                  <Badge variant="success" className="text-[10px] py-0.5">
+                    STRANGLE LIVE
+                  </Badge>
+                </Link>
               )}
               {renkoEthActive && (
-                <Badge variant="info" className="text-[10px] py-0.5">
-                  RENKO ETH
-                </Badge>
+                <Link href="/engine/eth">
+                  <Badge variant="info" className="text-[10px] py-0.5">
+                    RENKO ETH
+                  </Badge>
+                </Link>
               )}
               {renkoSolActive && (
-                <Badge variant="info" className="text-[10px] py-0.5">
-                  RENKO SOL
-                </Badge>
+                <Link href="/engine/sol">
+                  <Badge variant="info" className="text-[10px] py-0.5">
+                    RENKO SOL
+                  </Badge>
+                </Link>
               )}
               {renkoXrpActive && (
-                <Badge variant="info" className="text-[10px] py-0.5">
-                  RENKO XRP
-                </Badge>
+                <Link href="/engine/xrp">
+                  <Badge variant="info" className="text-[10px] py-0.5">
+                    RENKO XRP
+                  </Badge>
+                </Link>
               )}
               <Badge
                 variant={isSafeHalt ? "destructive" : isRunning ? "success" : "outline"}

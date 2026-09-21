@@ -23,10 +23,12 @@ import type { PerformanceMetricsResponse } from "@/lib/api/schemas";
 interface PnlChartsProps {
   metrics?: PerformanceMetricsResponse | null;
   isLoading?: boolean;
+  title?: string;
 }
 
-export function PnlCharts({ metrics, isLoading }: PnlChartsProps) {
+export function PnlCharts({ metrics, isLoading, title = "P&L & Performance Analytics" }: PnlChartsProps) {
   const [activeTab, setActiveTab] = useState<"cumulative" | "daily" | "monthly">("cumulative");
+  const gradId = React.useId().replace(/:/g, "");
 
   if (isLoading) {
     return (
@@ -56,7 +58,7 @@ export function PnlCharts({ metrics, isLoading }: PnlChartsProps) {
       <CardHeader className="py-3 px-4 border-b border-border/60 bg-secondary/10">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="text-xs font-semibold text-foreground uppercase tracking-wider">
-            P&amp;L &amp; Performance Analytics
+            {title}
           </CardTitle>
 
           <div className="flex items-center gap-1.5 bg-background/80 p-1 rounded-md border border-border/60">
@@ -106,7 +108,7 @@ export function PnlCharts({ metrics, isLoading }: PnlChartsProps) {
                   margin={{ top: 10, right: 10, left: -15, bottom: 0 }}
                 >
                   <defs>
-                    <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
+                    <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="#10b981" stopOpacity={0.35} />
                       <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
                     </linearGradient>
@@ -143,7 +145,7 @@ export function PnlCharts({ metrics, isLoading }: PnlChartsProps) {
                     stroke="#10b981"
                     strokeWidth={2}
                     fillOpacity={1}
-                    fill="url(#equityGradient)"
+                    fill={`url(#${gradId})`}
                     isAnimationActive={false}
                   />
                 </AreaChart>

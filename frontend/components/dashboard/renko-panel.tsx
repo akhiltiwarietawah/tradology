@@ -25,6 +25,17 @@ function positionLabel(position?: number): { label: string; variant: "success" |
   return { label: "FLAT", variant: "secondary" };
 }
 
+export function renkoUnrealizedPnl(snapshot?: RenkoSnapshot | null): number | null {
+  if (!snapshot || !snapshot.position) return null;
+  const entry = Number(snapshot.entry_price);
+  const mark = Number(snapshot.last_brick_close);
+  const qty = Number(snapshot.open_quantity || snapshot.position_size || 0);
+  const cv = Number(snapshot.contract_value || 0);
+  if (!entry || !mark || qty <= 0 || cv <= 0) return null;
+  const diff = mark - entry;
+  return (snapshot.position > 0 ? diff : -diff) * qty * cv;
+}
+
 export function RenkoPanel({ snapshot, isLoading }: RenkoPanelProps) {
   if (isLoading) {
     return (
@@ -80,7 +91,7 @@ export function RenkoPanel({ snapshot, isLoading }: RenkoPanelProps) {
             </Badge>
           </div>
         </CardHeader>
-        <CardContent className="py-8 text-center">
+        <CardContent className="py-6 text-center">
           <div className="flex flex-col items-center space-y-2">
             <div className="h-10 w-10 rounded-full bg-secondary/50 flex items-center justify-center">
               <CheckCircle2 className="h-5 w-5 text-muted-foreground" />
@@ -90,6 +101,22 @@ export function RenkoPanel({ snapshot, isLoading }: RenkoPanelProps) {
               Waiting for Ichimoku + Renko brick signal on {snapshot.configured_symbol || snapshot.symbol}.
               Bricks built: {snapshot.bricks ?? 0}
             </p>
+            <div className="mt-3 grid grid-cols-2 gap-4 text-xs font-mono">
+              <div>
+                <span className="text-[10px] text-muted-foreground block">Virtual equity</span>
+                <span className="font-semibold">{formatCurrency(snapshot.sizing_equity)}</span>
+              </div>
+              <div>
+                <span className="text-[10px] text-muted-foreground block">Last net PnL</span>
+                <span
+                  className={`font-semibold ${
+                    (snapshot.last_realized_pnl ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                  }`}
+                >
+                  {formatCurrency(snapshot.last_realized_pnl)}
+                </span>
+              </div>
+            </div>
             {isHalted && (
               <Badge variant="destructive" className="mt-2 text-[10px]">
                 <PauseCircle className="h-3 w-3 mr-1" />
@@ -103,6 +130,8 @@ export function RenkoPanel({ snapshot, isLoading }: RenkoPanelProps) {
   }
 
   const isLong = snapshot.position === 1;
+  const upl = renkoUnrealizedPnl(snapshot);
+  const qty = snapshot.open_quantity ?? snapshot.position_size;
 
   return (
     <Card className="bg-card/70 border-border/80 shadow-md">
@@ -142,7 +171,30 @@ export function RenkoPanel({ snapshot, isLoading }: RenkoPanelProps) {
         </div>
       </CardHeader>
 
-      <CardContent className="p-4">
+      <CardContent className="p-4 space-y-4">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Unrealized P&amp;L</span>
+            <div
+              className={`text-2xl font-bold font-mono ${
+                (upl ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+              }`}
+            >
+              {formatCurrency(upl)}
+            </div>
+            <p className="text-[11px] text-muted-foreground font-mono mt-0.5">
+              Mark {formatCurrency(snapshot.last_brick_close)} vs entry {formatCurrency(snapshot.entry_price)}
+            </p>
+          </div>
+          <div className="text-right">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Virtual equity</span>
+            <div className="text-lg font-semibold font-mono">{formatCurrency(snapshot.sizing_equity)}</div>
+            <p className="text-[11px] text-muted-foreground font-mono">
+              {snapshot.position_sizing_mode || "fixed"} sizing
+            </p>
+          </div>
+        </div>
+
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 text-xs font-mono">
           <div>
             <span className="text-[10px] text-muted-foreground block">Entry Price</span>
@@ -151,9 +203,9 @@ export function RenkoPanel({ snapshot, isLoading }: RenkoPanelProps) {
             </span>
           </div>
           <div>
-            <span className="text-[10px] text-muted-foreground block">Position Size</span>
+            <span className="text-[10px] text-muted-foreground block">Open Qty</span>
             <span className="font-semibold text-foreground text-sm">
-              {snapshot.position_size ?? "--"} contracts
+              {qty ?? "--"} contracts
             </span>
           </div>
           <div>

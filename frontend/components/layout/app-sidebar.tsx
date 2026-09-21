@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   Activity,
   BarChart3,
+  CandlestickChart,
   CreditCard,
   LayoutDashboard,
   Layers,
@@ -18,12 +19,19 @@ import { cn } from "@/lib/utils";
 
 const primaryNav = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
-  { href: "/strategies", label: "Strategies", icon: Waypoints },
-  { href: "/my-strategies", label: "My Strategies", icon: Layers },
-  { href: "/accounts", label: "Accounts", icon: Wallet },
+  { href: "/engine/eth", label: "Renko ETH", icon: CandlestickChart },
+  { href: "/engine/sol", label: "Renko SOL", icon: CandlestickChart },
+  { href: "/engine/xrp", label: "Renko XRP", icon: CandlestickChart },
+  { href: "/engine/strangle", label: "BTC Strangle", icon: Layers },
   { href: "/performance", label: "Performance", icon: LineChart },
   { href: "/trades", label: "Trades", icon: Activity },
   { href: "/orders", label: "Orders", icon: ListOrdered },
+];
+
+const catalogNav = [
+  { href: "/strategies", label: "Catalog", icon: Waypoints },
+  { href: "/my-strategies", label: "My Strategies", icon: Layers },
+  { href: "/accounts", label: "Accounts", icon: Wallet },
 ];
 
 const secondaryNav = [
@@ -72,8 +80,12 @@ export function AppSidebar() {
       </div>
 
       <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
-        <p className="px-3 pb-1 text-[10px] uppercase tracking-widest text-muted-foreground/70">Platform</p>
+        <p className="px-3 pb-1 text-[10px] uppercase tracking-widest text-muted-foreground/70">Live engine</p>
         {primaryNav.map(renderLink)}
+        <div className="pt-4 pb-1">
+          <p className="px-3 pb-1 text-[10px] uppercase tracking-widest text-muted-foreground/70">Platform</p>
+        </div>
+        {catalogNav.map(renderLink)}
         <div className="pt-4 pb-1">
           <p className="px-3 pb-1 text-[10px] uppercase tracking-widest text-muted-foreground/70">Account</p>
         </div>

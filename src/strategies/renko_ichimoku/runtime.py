@@ -1118,6 +1118,8 @@ class RenkoIchimokuRuntime:
             "sizing_equity": self.state.sizing_equity,
             "open_quantity": self.state.open_quantity,
             "last_realized_pnl": self.state.last_realized_pnl,
+            "last_brick_close": self.state.last_brick_close,
+            "contract_value": self.contract_value,
             "margin_pct": self.margin_pct,
             "leverage": self.leverage,
             "profit_retain_pct": self.profit_retain_pct,
