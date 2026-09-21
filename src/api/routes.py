@@ -86,6 +86,8 @@ def create_router(engine) -> APIRouter:
     async def get_performance(
         from_date: Optional[str] = None,
         to_date: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         strategy_name: Optional[str] = None,
         exchange: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -99,8 +101,8 @@ def create_router(engine) -> APIRouter:
             logger=engine.logger,
         )
         res = await perf_service.get_performance(
-            from_date=from_date,
-            to_date=to_date,
+            from_date=from_date or start_date,
+            to_date=to_date or end_date,
             strategy_name=strategy_name,
             exchange=exchange,
             fallback_history=history,

@@ -80,7 +80,18 @@ export const RenkoSnapshotSchema = z.object({
   entry_order_id: z.union([z.string(), z.number()]).nullable().optional(),
   active_trade_id: z.string().nullable().optional(),
   bricks: z.number().optional(),
-  last_processed_candle_time: z.string().nullable().optional(),
+  last_processed_candle_time: z
+    .union([z.string(), z.number()])
+    .nullable()
+    .optional()
+    .transform((value) => {
+      if (value == null) return value;
+      if (typeof value === "number") {
+        const ms = value < 1e12 ? value * 1000 : value;
+        return new Date(ms).toISOString();
+      }
+      return value;
+    }),
   instrument_id: z.union([z.number(), z.string()]).nullable().optional(),
   position_size: z.number().optional(),
   position_sizing_mode: z.string().optional(),

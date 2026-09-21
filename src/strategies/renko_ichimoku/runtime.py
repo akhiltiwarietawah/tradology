@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol
 
 from src.core.models.order import Order, OrderRequest, OrderSide, OrderState, OrderType
@@ -1098,6 +1098,16 @@ class RenkoIchimokuRuntime:
         return True
 
     def snapshot(self) -> Dict[str, Any]:
+        candle_ts = self.state.last_processed_candle_time
+        candle_iso = None
+        if candle_ts:
+            try:
+                val = float(candle_ts)
+                if val > 1e12:
+                    val /= 1000.0
+                candle_iso = datetime.fromtimestamp(val, timezone.utc).isoformat()
+            except (TypeError, ValueError, OSError):
+                candle_iso = None
         return {
             "enabled": True,
             "instance_id": self.instance_id,
@@ -1111,7 +1121,7 @@ class RenkoIchimokuRuntime:
             "entry_order_id": self.state.entry_order_id,
             "active_trade_id": self.state.active_trade_id,
             "bricks": len(self.renko.bricks),
-            "last_processed_candle_time": self.state.last_processed_candle_time,
+            "last_processed_candle_time": candle_iso,
             "instrument_id": self.instrument_id,
             "position_size": self.position_size,
             "position_sizing_mode": self.position_sizing_mode,

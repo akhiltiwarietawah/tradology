@@ -41,6 +41,8 @@ export class ApiClientError extends Error {
 export interface PerformanceQueryParams {
   start_date?: string;
   end_date?: string;
+  from_date?: string;
+  to_date?: string;
   strategy_name?: string;
   exchange?: string;
 }
@@ -179,8 +181,10 @@ export class ApiClient {
    */
   async getPerformance(params?: PerformanceQueryParams): Promise<PerformanceMetricsResponse> {
     const query = new URLSearchParams();
-    if (params?.start_date) query.set("start_date", params.start_date);
-    if (params?.end_date) query.set("end_date", params.end_date);
+    const fromDate = params?.from_date || params?.start_date;
+    const toDate = params?.to_date || params?.end_date;
+    if (fromDate) query.set("from_date", fromDate);
+    if (toDate) query.set("to_date", toDate);
     if (params?.strategy_name) query.set("strategy_name", params.strategy_name);
     if (params?.exchange) query.set("exchange", params.exchange);
 

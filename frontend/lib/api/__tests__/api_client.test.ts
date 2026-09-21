@@ -258,8 +258,8 @@ describe("ApiClient & Zod Schemas", () => {
         strategy_name: "short_strangle",
       });
 
-      expect(capturedUrl).toContain("start_date=2026-08-01");
-      expect(capturedUrl).toContain("end_date=2026-09-01");
+      expect(capturedUrl).toContain("from_date=2026-08-01");
+      expect(capturedUrl).toContain("to_date=2026-09-01");
       expect(capturedUrl).toContain("strategy_name=short_strangle");
     });
 
