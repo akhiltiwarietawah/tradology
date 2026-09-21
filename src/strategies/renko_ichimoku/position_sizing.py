@@ -24,6 +24,11 @@ def compute_realized_pnl_usd(
     return diff * float(quantity) * float(contract_value)
 
 
+def net_pnl_after_fees(gross_pnl: float, fees: float = 0.0) -> float:
+    """Gross fill PnL minus round-trip commissions (fees are never negative)."""
+    return float(gross_pnl) - max(0.0, float(fees or 0.0))
+
+
 def apply_exit_to_sizing_equity(
     sizing_equity: float,
     realized_pnl: float,
@@ -32,9 +37,10 @@ def apply_exit_to_sizing_equity(
     """
     Update virtual sizing equity after a closed trade.
 
-    Winning trades: only ``profit_retain_pct`` of profit is kept for sizing
-    (simulates withdrawing the rest without moving funds off-exchange).
-    Losing trades: full loss is applied to sizing equity.
+    ``realized_pnl`` should already be net of commissions. Winning trades: only
+    ``profit_retain_pct`` of that net profit is kept for sizing (simulates
+    withdrawing the rest without moving funds off-exchange). Losing trades:
+    full net loss is applied to sizing equity.
     """
     retain = max(0.0, min(1.0, float(profit_retain_pct)))
     if realized_pnl > 0:

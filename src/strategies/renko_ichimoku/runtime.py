@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Protocol
 
 from src.core.models.order import Order, OrderRequest, OrderSide, OrderState, OrderType
 from src.core.models.position import Position
+from src.exchanges.delta.fill_fees import commissions_by_order_id
 from src.execution.execution_engine import ExecutionEngine
 from src.execution.order_manager import OrderManager
 from src.strategies.renko_ichimoku.ichimoku import IncrementalIchimoku
@@ -21,6 +22,7 @@ from src.strategies.renko_ichimoku.position_sizing import (
     effective_equity_for_entry,
     is_valid_sizing_mode,
     margin_usd_from_equity,
+    net_pnl_after_fees,
 )
 from src.strategies.renko_ichimoku.prefix_logger import PrefixLogger
 from src.strategies.renko_ichimoku.renko import TraditionalRenko, ConfirmedBrick
@@ -282,29 +284,61 @@ class RenkoIchimokuRuntime:
         )
         return float(contracts)
 
+    async def round_trip_fees(
+        self,
+        *,
+        entry_order_id: Optional[str],
+        exit_order_id: Optional[str],
+        entry_time: Optional[float] = None,
+    ) -> tuple[float, float]:
+        """Return (total entry+exit commission USD, exit-leg commission USD)."""
+        if self.dry_run or not self.exchange_ops or not self.instrument_id:
+            return 0.0, 0.0
+        order_ids = [oid for oid in (entry_order_id, exit_order_id) if oid]
+        if not order_ids:
+            return 0.0, 0.0
+        try:
+            by_order = await commissions_by_order_id(
+                self.exchange_ops,
+                instrument_id=str(self.instrument_id),
+                order_ids=order_ids,
+                entry_time=entry_time,
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Fee lookup failed (sizing uses gross PnL this exit): {type(e).__name__}: {e}"
+            )
+            return 0.0, 0.0
+        total = round(sum(by_order.values()), 4)
+        exit_fee = round(float(by_order.get(str(exit_order_id or ""), 0.0)), 4)
+        return total, exit_fee
+
     def _update_sizing_after_exit(
         self,
         entry_price: float,
         exit_price: float,
         quantity: float,
         position_side: int,
+        fees: float = 0.0,
     ) -> None:
         if not self.is_dynamic_sizing:
             return
-        pnl = compute_realized_pnl_usd(
+        gross = compute_realized_pnl_usd(
             entry_price,
             exit_price,
             quantity,
             self.contract_value,
             position_side,
         )
+        pnl = net_pnl_after_fees(gross, fees)
         prev = float(self.state.sizing_equity or self.sizing_base_usd)
         new_eq = apply_exit_to_sizing_equity(prev, pnl, self.profit_retain_pct)
         self.state.last_realized_pnl = pnl
         self.state.sizing_equity = max(0.0, new_eq)
         retained = pnl * self.profit_retain_pct if pnl > 0 else pnl
         self.logger.info(
-            f"Dynamic sizing exit pnl=${pnl:.4f} sizing_delta=${retained:.4f} "
+            f"Dynamic sizing exit gross=${gross:.4f} fees=${max(0.0, float(fees or 0)):.4f} "
+            f"net=${pnl:.4f} sizing_delta=${retained:.4f} "
             f"sizing_equity ${prev:.2f} -> ${self.state.sizing_equity:.2f} "
             f"(profit_retain_pct={self.profit_retain_pct})"
         )
@@ -571,7 +605,7 @@ class RenkoIchimokuRuntime:
         if existing:
             self.logger.warning(f"Reusing existing local order for cid={cid} state={existing.state.value}")
             if existing.is_filled:
-                self._apply_fill(action.kind, existing, brick)
+                await self._finalize_filled_order(action, existing, brick)
                 self._clear_in_flight()
                 return True
             self._halt(f"Duplicate client_order_id {cid} without a local fill. Manual check required.")
@@ -616,8 +650,7 @@ class RenkoIchimokuRuntime:
                 average_fill_price=brick.close,
             )
             self.order_manager.record_order(order)
-            await self._persist_fill(action, order, brick)
-            self._apply_fill(action.kind, order, brick)
+            await self._finalize_filled_order(action, order, brick)
             self._clear_in_flight()
             self.store.save(self.state)
             return True
@@ -666,13 +699,38 @@ class RenkoIchimokuRuntime:
             )
             return False
 
-        await self._persist_fill(action, order, brick)
-        self._apply_fill(action.kind, order, brick)
+        await self._finalize_filled_order(action, order, brick)
         self._clear_in_flight()
         self.store.save(self.state)
         return True
 
-    async def _persist_fill(self, action: SignalAction, order: Order, brick: ConfirmedBrick) -> None:
+    async def _finalize_filled_order(self, action: SignalAction, order: Order, brick: ConfirmedBrick) -> None:
+        fees = 0.0
+        exit_fill_fee = 0.0
+        if action.kind in ("exit_long", "exit_short"):
+            fees, exit_fill_fee = await self.round_trip_fees(
+                entry_order_id=str(self.state.entry_order_id or "") or None,
+                exit_order_id=str(order.order_id or "") or None,
+                entry_time=self.state.entry_time,
+            )
+        await self._persist_fill(
+            action,
+            order,
+            brick,
+            fees=fees,
+            exit_fill_fee=exit_fill_fee,
+        )
+        self._apply_fill(action.kind, order, brick, fees=fees)
+
+    async def _persist_fill(
+        self,
+        action: SignalAction,
+        order: Order,
+        brick: ConfirmedBrick,
+        *,
+        fees: float = 0.0,
+        exit_fill_fee: float = 0.0,
+    ) -> None:
         if not self.fill_persister:
             return
         try:
@@ -682,20 +740,28 @@ class RenkoIchimokuRuntime:
                 order=order,
                 brick=brick,
                 runtime=self,
+                fees=fees,
+                exit_fill_fee=exit_fill_fee,
             )
         except Exception as e:
             self.logger.warning(
                 f"DATABASE: Renko fill persist failed (trading continues): {type(e).__name__}: {e}"
             )
 
-    def _apply_fill(self, action_kind: str, order: Order, brick: ConfirmedBrick) -> None:
+    def _apply_fill(
+        self,
+        action_kind: str,
+        order: Order,
+        brick: ConfirmedBrick,
+        fees: float = 0.0,
+    ) -> None:
         fill_px = order.average_fill_price or brick.close
         filled_qty = float(order.filled_quantity or self._pending_order_quantity or 0.0)
         if action_kind in ("exit_long", "exit_short"):
             prev_side = 1 if action_kind == "exit_long" else -1
             entry_px = float(self.state.entry_price or fill_px)
             exit_qty = float(self.state.open_quantity or filled_qty or self._expected_open_quantity())
-            self._update_sizing_after_exit(entry_px, float(fill_px), exit_qty, prev_side)
+            self._update_sizing_after_exit(entry_px, float(fill_px), exit_qty, prev_side, fees=fees)
             self.state.position = 0
             self.state.entry_price = None
             self.state.entry_order_id = order.order_id
@@ -761,7 +827,14 @@ class RenkoIchimokuRuntime:
                 direction=0,
                 source_bar_index=0,
             )
-            self._apply_fill(action, order, brick)
+            fees = 0.0
+            if action in ("exit_long", "exit_short"):
+                fees, _ = await self.round_trip_fees(
+                    entry_order_id=str(self.state.entry_order_id or "") or None,
+                    exit_order_id=str(order.order_id or "") or None,
+                    entry_time=self.state.entry_time,
+                )
+            self._apply_fill(action, order, brick, fees=fees)
             self._clear_in_flight()
             return
         if order.state in (OrderState.REJECTED, OrderState.CANCELLED, OrderState.EXPIRED):
@@ -913,8 +986,15 @@ class RenkoIchimokuRuntime:
         prev_entry_time = self.state.entry_time
         prev_side = local_side
         prev_qty = float(self.state.open_quantity or self._expected_open_quantity())
+        total_fees, exit_fill_fee = await self.round_trip_fees(
+            entry_order_id=str(entry_order_id) if entry_order_id else None,
+            exit_order_id=str(exit_order_id) if exit_order_id else None,
+            entry_time=prev_entry_time,
+        )
         if prev_entry and exit_price and prev_qty > 0:
-            self._update_sizing_after_exit(float(prev_entry), float(exit_price), prev_qty, prev_side)
+            self._update_sizing_after_exit(
+                float(prev_entry), float(exit_price), prev_qty, prev_side, fees=total_fees
+            )
         self.state.position = 0
         self.state.entry_price = None
         self.state.active_trade_id = None
@@ -940,6 +1020,9 @@ class RenkoIchimokuRuntime:
                     entry_price=prev_entry,
                     entry_time=prev_entry_time,
                     trade_id=prev_trade_id,
+                    quantity=prev_qty,
+                    fees=total_fees,
+                    exit_fill_fee=exit_fill_fee,
                     runtime=self,
                 )
             except Exception as e:

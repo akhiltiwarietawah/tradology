@@ -10,6 +10,7 @@ from src.strategies.renko_ichimoku.position_sizing import (
     contracts_from_sizing_equity,
     effective_equity_for_entry,
     margin_usd_from_equity,
+    net_pnl_after_fees,
 )
 
 
@@ -24,6 +25,13 @@ def test_apply_exit_retains_half_of_profit_only():
     assert eq == pytest.approx(110.0)
     eq = apply_exit_to_sizing_equity(100.0, -20.0, 0.5)
     assert eq == pytest.approx(80.0)
+
+
+def test_net_pnl_after_fees_can_turn_win_into_loss():
+    assert net_pnl_after_fees(0.8, 0.2) == pytest.approx(0.6)
+    assert net_pnl_after_fees(0.8, 1.0) == pytest.approx(-0.2)
+    eq = apply_exit_to_sizing_equity(100.0, net_pnl_after_fees(0.8, 1.0), 0.5)
+    assert eq == pytest.approx(99.8)
 
 
 def test_contracts_from_100_usd_account_25pct_10x():
@@ -122,3 +130,12 @@ async def test_runtime_dynamic_sizing_updates_equity_on_exit(tmp_path):
     # pnl = (3010-3000)*8*0.01 = 0.8; retain 50% -> +0.4
     assert rt.state.sizing_equity == pytest.approx(100.4)
     assert rt.state.last_realized_pnl == pytest.approx(0.8)
+
+    rt.state.sizing_equity = 100.0
+    rt.state.position = 1
+    rt.state.entry_price = 3000.0
+    rt.state.open_quantity = entry_qty
+    rt._apply_fill("exit_long", order, brick, fees=0.2)
+    # net = 0.8 - 0.2 = 0.6; retain 50% -> +0.3
+    assert rt.state.last_realized_pnl == pytest.approx(0.6)
+    assert rt.state.sizing_equity == pytest.approx(100.3)

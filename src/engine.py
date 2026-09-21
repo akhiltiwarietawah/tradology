@@ -14,7 +14,6 @@ from src.core.models.instrument import Instrument
 from src.core.models.market_data import Ticker
 from src.exchanges.service import ExchangeService
 from src.exchanges.delta.adapter import DeltaExchangeAdapter
-from src.exchanges.delta.fill_fees import commissions_by_order_id
 from src.strategies.short_strangle.selector import OptionSelector
 from src.strategies.short_strangle.strategy import BTCShortStrangleStrategy
 from src.strategies.short_strangle.models import ShortStrangleConfig
@@ -922,13 +921,23 @@ class TradingEngine:
             },
         )()
         reason = "position_manually_closed"
-        exit_qty = float(rt.state.open_quantity or rt._expected_open_quantity() or rt.position_size or 0)
-        total_fees, exit_fill_fee = await self._renko_round_trip_fees(
-            rt,
-            entry_order_id=str(entry_order_id) if entry_order_id else None,
-            exit_order_id=str(exit_order_id) if exit_order_id else None,
-            entry_time=entry_time,
+        exit_qty = float(
+            kwargs.get("quantity")
+            or rt.state.open_quantity
+            or rt._expected_open_quantity()
+            or rt.position_size
+            or 0
         )
+        if kwargs.get("fees") is not None:
+            total_fees = float(kwargs["fees"] or 0)
+            exit_fill_fee = float(kwargs.get("exit_fill_fee") or 0)
+        else:
+            total_fees, exit_fill_fee = await self._renko_round_trip_fees(
+                rt,
+                entry_order_id=str(entry_order_id) if entry_order_id else None,
+                exit_order_id=str(exit_order_id) if exit_order_id else None,
+                entry_time=entry_time,
+            )
         async with asyncio.timeout(self.settings.db_timeout_seconds):
             await self.renko_trade_repo.record_exit(
                 trade_id=trade_id,
@@ -975,17 +984,10 @@ class TradingEngine:
         entry_time: Optional[float],
     ) -> tuple[float, float]:
         """Return (total entry+exit commission USD, exit-leg commission USD) from Delta fills."""
-        adapter = self.renko_adapter
-        if not adapter or not runtime.instrument_id:
-            return 0.0, 0.0
-        order_ids = [oid for oid in (entry_order_id, exit_order_id) if oid]
-        if not order_ids:
-            return 0.0, 0.0
         try:
-            by_order = await commissions_by_order_id(
-                adapter,
-                instrument_id=str(runtime.instrument_id),
-                order_ids=order_ids,
+            return await runtime.round_trip_fees(
+                entry_order_id=entry_order_id,
+                exit_order_id=exit_order_id,
                 entry_time=entry_time,
             )
         except Exception as e:
@@ -994,9 +996,6 @@ class TradingEngine:
                 f"(trading continues): {type(e).__name__}: {e}"
             )
             return 0.0, 0.0
-        total = round(sum(by_order.values()), 4)
-        exit_fee = round(float(by_order.get(str(exit_order_id or ""), 0.0)), 4)
-        return total, exit_fee
 
     async def _persist_renko_fill_to_db(self, **kwargs) -> None:
         """Persist Renko entry/exit lifecycle to PostgreSQL (non-blocking for trading)."""
@@ -1039,14 +1038,18 @@ class TradingEngine:
                     instance_id=rt.instance_id,
                 )
                 qty = self._renko_persist_quantity(rt, order, action_kind)
-                entry_oid = str(rt.state.entry_order_id or "")
-                exit_oid = str(order.order_id or "")
-                total_fees, exit_fill_fee = await self._renko_round_trip_fees(
-                    rt,
-                    entry_order_id=entry_oid or None,
-                    exit_order_id=exit_oid or None,
-                    entry_time=rt.state.entry_time,
-                )
+                if kwargs.get("fees") is not None:
+                    total_fees = float(kwargs["fees"] or 0)
+                    exit_fill_fee = float(kwargs.get("exit_fill_fee") or 0)
+                else:
+                    entry_oid = str(rt.state.entry_order_id or "")
+                    exit_oid = str(order.order_id or "")
+                    total_fees, exit_fill_fee = await self._renko_round_trip_fees(
+                        rt,
+                        entry_order_id=entry_oid or None,
+                        exit_order_id=exit_oid or None,
+                        entry_time=rt.state.entry_time,
+                    )
                 await self.renko_trade_repo.record_exit(
                     trade_id=trade_id,
                     order=order,

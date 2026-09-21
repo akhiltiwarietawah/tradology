@@ -54,9 +54,9 @@ If `RENKO_ICHIMOKU_ACCOUNT` equals `EXISTING_STRATEGY_ACCOUNT`, both strategies 
 | `RENKO_ICHIMOKU_SIZING_BASE_USD` | `100` | Initial virtual `sizing_equity` on first run (or when state has none) |
 | `RENKO_ICHIMOKU_MARGIN_PCT` | `0.25` | Dynamic: **each** entry uses `25%` of effective equity as margin (independent per signal) |
 | `RENKO_ICHIMOKU_LEVERAGE` | `10` | Dynamic: notional = margin × leverage |
-| `RENKO_ICHIMOKU_PROFIT_RETAIN_PCT` | `0.5` | Dynamic: on a **win**, only 50% of realized PnL is added to virtual `sizing_equity` (simulates 50% withdraw). **Losses apply in full.** |
+| `RENKO_ICHIMOKU_PROFIT_RETAIN_PCT` | `0.5` | Dynamic: on a **net win** (gross fill PnL minus commissions), only 50% is added to virtual `sizing_equity`. **Net losses apply in full.** |
 
-**Dynamic mode** sizes from virtual `sizing_equity` (starts at `SIZING_BASE_USD`), capped by live wallet on each entry: effective equity = `min(account_balance, virtual sizing_equity)`. Example: `$60` virtual base → `$15` margin per trade → `$150` notional at `10x` (each asset uses its own 25% slice when it signals). Virtual equity is adjusted after exits (50% profit retain). Contract size uses each product's real `contract_value` from Delta (e.g. ETH `0.01`, SOL `1`, XRP per product spec).
+**Dynamic mode** sizes from virtual `sizing_equity` (starts at `SIZING_BASE_USD`), capped by live wallet on each entry: effective equity = `min(account_balance, virtual sizing_equity)`. Example: `$60` virtual base → `$15` margin per trade → `$150` notional at `10x` (each asset uses its own 25% slice when it signals). After each exit, virtual equity uses **net** PnL (`gross fill PnL − entry/exit commissions`); then 50% of a **net win** is retained. Contract size uses each product's real `contract_value` from Delta (e.g. ETH `0.01`, SOL `1`, XRP per product spec).
 
 Logs use `[EXISTING]`, `[RENKO_ETH]`, `[RENKO_SOL]`, and `[RENKO_XRP]`.
 
