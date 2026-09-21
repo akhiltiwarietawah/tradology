@@ -154,12 +154,7 @@ def parse_bot_log(path: Path) -> Dict[str, RoundTrip]:
     return trips
 
 
-def _fill_commission(fill: dict) -> float:
-    commission = fill.get("commission") or fill.get("fees") or 0.0
-    try:
-        return abs(float(commission))
-    except (TypeError, ValueError):
-        return 0.0
+from src.exchanges.delta.fill_fees import sum_commission_for_order_ids
 
 
 async def fees_for_orders(
@@ -167,20 +162,11 @@ async def fees_for_orders(
     product_id: str,
     order_ids: List[str],
 ) -> float:
-    want = {str(o) for o in order_ids if o}
-    if not want:
-        return 0.0
-    fills = await adapter.get_recent_fills_for_product(
+    return await sum_commission_for_order_ids(
+        adapter,
         instrument_id=str(product_id),
-        side=None,
-        page_size=50,
+        order_ids=order_ids,
     )
-    total = 0.0
-    for f in fills:
-        oid = str(f.get("order_id") or "")
-        if oid in want:
-            total += _fill_commission(f)
-    return round(total, 4)
 
 
 async def main() -> None:

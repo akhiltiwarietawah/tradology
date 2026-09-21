@@ -119,6 +119,7 @@ class RenkoTradeRepository:
                 "brick_close": brick.close,
                 "signal_reason": action_reason,
                 "contract_value": float(cv),
+                "entry_order_id": str(order.order_id) if order.order_id else None,
                 **(config_snapshot or {}),
             },
             "created_at": now,
@@ -168,6 +169,7 @@ class RenkoTradeRepository:
         quantity: float,
         contract_value: float = 0.01,
         fees: float = 0.0,
+        exit_fill_fee: Optional[float] = None,
         config_extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         now = datetime.now(timezone.utc)
@@ -226,6 +228,7 @@ class RenkoTradeRepository:
             trade_id=trade_id,
             leg_id=leg_id,
             fill_time=now,
+            fill_fee=exit_fill_fee,
         )
 
         trade_values = {
@@ -375,6 +378,7 @@ class RenkoTradeRepository:
         trade_id: str,
         leg_id: str,
         fill_time: datetime,
+        fill_fee: Optional[float] = None,
     ) -> None:
         order_id = str(order.order_id) if order.order_id else f"ORD_{order.client_order_id}"
         order_values = {
@@ -411,6 +415,7 @@ class RenkoTradeRepository:
             await session.commit()
 
         if order.state == OrderState.FILLED or float(order.filled_quantity or 0) > 0:
+            fee_val = float(fill_fee) if fill_fee is not None else 0.0
             fill = Fill(
                 fill_id=f"FILL_{order_id}",
                 order_id=order_id,
@@ -420,7 +425,7 @@ class RenkoTradeRepository:
                 side=order.side,
                 quantity=float(order.filled_quantity or order.quantity),
                 price=float(order.average_fill_price or 0),
-                fee=0.0,
+                fee=fee_val,
                 fee_asset="USD",
                 timestamp=fill_time.isoformat(),
             )
@@ -433,7 +438,15 @@ class RenkoTradeRepository:
                 fee=to_decimal(fill.fee),
                 fee_currency=fill.fee_asset or "USD",
                 fill_time=fill_time,
-            ).on_conflict_do_nothing(index_elements=[FillModel.fill_id])
+            )
+            fill_stmt = fill_stmt.on_conflict_do_update(
+                index_elements=[FillModel.fill_id],
+                set_={
+                    "fee": fill_stmt.excluded.fee,
+                    "price": fill_stmt.excluded.price,
+                    "quantity": fill_stmt.excluded.quantity,
+                },
+            )
             async with self.db.get_session() as session:
                 await session.execute(fill_stmt)
                 await session.commit()

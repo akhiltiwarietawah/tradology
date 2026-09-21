@@ -14,6 +14,7 @@ from src.core.models.instrument import Instrument
 from src.core.models.market_data import Ticker
 from src.exchanges.service import ExchangeService
 from src.exchanges.delta.adapter import DeltaExchangeAdapter
+from src.exchanges.delta.fill_fees import commissions_by_order_id
 from src.strategies.short_strangle.selector import OptionSelector
 from src.strategies.short_strangle.strategy import BTCShortStrangleStrategy
 from src.strategies.short_strangle.models import ShortStrangleConfig
@@ -922,6 +923,12 @@ class TradingEngine:
         )()
         reason = "position_manually_closed"
         exit_qty = float(rt.state.open_quantity or rt._expected_open_quantity() or rt.position_size or 0)
+        total_fees, exit_fill_fee = await self._renko_round_trip_fees(
+            rt,
+            entry_order_id=str(entry_order_id) if entry_order_id else None,
+            exit_order_id=str(exit_order_id) if exit_order_id else None,
+            entry_time=entry_time,
+        )
         async with asyncio.timeout(self.settings.db_timeout_seconds):
             await self.renko_trade_repo.record_exit(
                 trade_id=trade_id,
@@ -933,6 +940,8 @@ class TradingEngine:
                 entry_time=entry_time,
                 quantity=exit_qty,
                 contract_value=rt.contract_value,
+                fees=total_fees,
+                exit_fill_fee=exit_fill_fee if exit_fill_fee > 0 else None,
                 config_extra={
                     "manual_close_entry_order_id": entry_order_id,
                     "manual_close_exit_order_id": exit_order_id,
@@ -956,6 +965,38 @@ class TradingEngine:
         if filled > 0:
             return filled
         return float(runtime._expected_open_quantity() or runtime.position_size or 0)
+
+    async def _renko_round_trip_fees(
+        self,
+        runtime: RenkoIchimokuRuntime,
+        *,
+        entry_order_id: Optional[str],
+        exit_order_id: Optional[str],
+        entry_time: Optional[float],
+    ) -> tuple[float, float]:
+        """Return (total entry+exit commission USD, exit-leg commission USD) from Delta fills."""
+        adapter = self.renko_adapter
+        if not adapter or not runtime.instrument_id:
+            return 0.0, 0.0
+        order_ids = [oid for oid in (entry_order_id, exit_order_id) if oid]
+        if not order_ids:
+            return 0.0, 0.0
+        try:
+            by_order = await commissions_by_order_id(
+                adapter,
+                instrument_id=str(runtime.instrument_id),
+                order_ids=order_ids,
+                entry_time=entry_time,
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"[RENKO_{runtime.instance_id.upper()}] DATABASE: fee lookup failed "
+                f"(trading continues): {type(e).__name__}: {e}"
+            )
+            return 0.0, 0.0
+        total = round(sum(by_order.values()), 4)
+        exit_fee = round(float(by_order.get(str(exit_order_id or ""), 0.0)), 4)
+        return total, exit_fee
 
     async def _persist_renko_fill_to_db(self, **kwargs) -> None:
         """Persist Renko entry/exit lifecycle to PostgreSQL (non-blocking for trading)."""
@@ -998,6 +1039,14 @@ class TradingEngine:
                     instance_id=rt.instance_id,
                 )
                 qty = self._renko_persist_quantity(rt, order, action_kind)
+                entry_oid = str(rt.state.entry_order_id or "")
+                exit_oid = str(order.order_id or "")
+                total_fees, exit_fill_fee = await self._renko_round_trip_fees(
+                    rt,
+                    entry_order_id=entry_oid or None,
+                    exit_order_id=exit_oid or None,
+                    entry_time=rt.state.entry_time,
+                )
                 await self.renko_trade_repo.record_exit(
                     trade_id=trade_id,
                     order=order,
@@ -1008,8 +1057,13 @@ class TradingEngine:
                     entry_time=rt.state.entry_time,
                     quantity=qty,
                     contract_value=rt.contract_value,
+                    fees=total_fees,
+                    exit_fill_fee=exit_fill_fee if exit_fill_fee > 0 else None,
                 )
-                self.logger.info(f"[RENKO_ICHIMOKU] DATABASE: persisted exit trade_id={trade_id}")
+                self.logger.info(
+                    f"[RENKO_ICHIMOKU] DATABASE: persisted exit trade_id={trade_id} "
+                    f"fees=${total_fees:.4f} net_pnl_includes_fees=True"
+                )
         self.last_db_operation_time = datetime.now(timezone.utc)
 
     async def _backfill_renko_db_if_needed(self, runtime: RenkoIchimokuRuntime) -> None:
