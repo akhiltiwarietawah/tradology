@@ -271,8 +271,8 @@ class Settings(BaseSettings):
         description="Renko sizing: 'fixed' = RENKO_*_POSITION_SIZE contracts; 'dynamic' = margin = sizing_equity × margin_pct × leverage.",
     )
     renko_ichimoku_sizing_base_usd: float = Field(
-        default=100.0,
-        description="Starting virtual sizing equity (USD) for dynamic mode when state has no sizing_equity yet.",
+        default=50.0,
+        description="Starting virtual sizing equity (USD) per coin when state has no sizing_equity yet.",
     )
     renko_ichimoku_margin_pct: float = Field(
         default=0.25,
@@ -287,6 +287,20 @@ class Settings(BaseSettings):
         description=(
             "Dynamic mode: fraction of realized profit kept in sizing_equity after each win "
             "(0.5 = simulate 50% withdraw; loss always applied in full)."
+        ),
+    )
+    renko_ichimoku_alts_enabled: str = Field(
+        default="",
+        description=(
+            "Comma-separated extra Renko instances from the asset registry: "
+            "btc,bnb,doge,ada,trx,avax,link,hype. Each gets its own state file and strategy code."
+        ),
+    )
+    renko_ichimoku_split_margin_across_book: bool = Field(
+        default=False,
+        description=(
+            "When true, divide RENKO_ICHIMOKU_MARGIN_PCT by the number of enabled Renko instances "
+            "so one account is not sized as if each asset may use a full 25% slice simultaneously."
         ),
     )
 
@@ -392,16 +406,62 @@ class Settings(BaseSettings):
         return self.active_api_key, self.active_api_secret
 
     def has_any_renko_enabled(self) -> bool:
+        from src.strategies.renko_ichimoku.asset_registry import parse_enabled_alt_ids
+
         return bool(
             self.renko_ichimoku_strategy_enabled
             or self.renko_ichimoku_sol_enabled
             or self.renko_ichimoku_xrp_enabled
+            or parse_enabled_alt_ids(self.renko_ichimoku_alts_enabled)
         )
 
-    def all_renko_state_files(self) -> List[str]:
-        """Default state paths for ETH, SOL, and XRP (used for disabled-strategy warnings)."""
+    def _renko_env_float(self, env_key: str, default: float) -> float:
+        raw = os.getenv(env_key)
+        if raw is None or not str(raw).strip():
+            return float(default)
+        return float(raw)
+
+    def _renko_env_str(self, env_key: str, default: str) -> str:
+        raw = os.getenv(env_key)
+        if raw is None or not str(raw).strip():
+            return default
+        return str(raw).strip()
+
+    def _sizing_base_for_instance(self, instance_id: str) -> float:
+        prefix = instance_id.upper()
+        return self._renko_env_float(
+            f"RENKO_ICHIMOKU_{prefix}_SIZING_BASE_USD",
+            self.renko_ichimoku_sizing_base_usd,
+        )
+
+    def _renko_credentials_for_instance(self, instance_id: str) -> tuple[str, str, str]:
+        """Return (account_label, api_key, api_secret) for one Renko instance."""
+        prefix = instance_id.upper()
+        account = self._renko_env_str(f"RENKO_ICHIMOKU_{prefix}_ACCOUNT", self.renko_ichimoku_account)
+        inst_key = os.getenv(f"RENKO_ICHIMOKU_{prefix}_API_KEY")
+        inst_secret = os.getenv(f"RENKO_ICHIMOKU_{prefix}_API_SECRET")
+        if inst_key and inst_secret and str(inst_key).strip() and str(inst_secret).strip():
+            return account, str(inst_key).strip(), str(inst_secret).strip()
+        default_key, default_secret = self.renko_api_credentials()
+        if default_key and default_secret:
+            return account, default_key, default_secret
+        if self.renko_uses_shared_primary_adapter():
+            return account, self.active_api_key, self.active_api_secret
+        return account, "", ""
+
+    def _renko_state_path(self, instance_id: str) -> str:
         env_suffix = "live" if self.delta_env == Environment.LIVE else "testnet"
-        return [
+        override = os.getenv(f"RENKO_ICHIMOKU_{instance_id.upper()}_STATE_FILE")
+        if override and str(override).strip():
+            return str(override).strip()
+        return f"{self.data_dir}/renko_ichimoku_{instance_id}_state_{env_suffix}.json"
+
+    def renko_state_file_candidates(self) -> List[str]:
+        """Default state paths for ETH/SOL/XRP and every registry alt (warning scan)."""
+        from src.strategies.renko_ichimoku.asset_registry import RENKO_ALT_REGISTRY
+
+        env_suffix = "live" if self.delta_env == Environment.LIVE else "testnet"
+        paths = [
             self.renko_ichimoku_state_file
             or f"{self.data_dir}/renko_ichimoku_eth_state_{env_suffix}.json",
             self.renko_ichimoku_sol_state_file
@@ -409,9 +469,25 @@ class Settings(BaseSettings):
             self.renko_ichimoku_xrp_state_file
             or f"{self.data_dir}/renko_ichimoku_xrp_state_{env_suffix}.json",
         ]
+        for alt_id in RENKO_ALT_REGISTRY:
+            paths.append(self._renko_state_path(alt_id))
+        seen: set[str] = set()
+        out: List[str] = []
+        for p in paths:
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+        return out
+
+    def all_renko_state_files(self) -> List[str]:
+        """State paths for enabled Renko instances."""
+        return [c.state_file for c in self.renko_instance_configs()]
 
     def renko_instance_configs(self) -> List["RenkoInstanceConfig"]:
-        """Build enabled Renko instances (ETH / SOL / XRP when their flags are on)."""
+        """Build enabled Renko instances (ETH / SOL / XRP + registry alts)."""
+        from dataclasses import replace
+
+        from src.strategies.renko_ichimoku.asset_registry import RENKO_ALT_REGISTRY, parse_enabled_alt_ids
         from src.strategies.renko_ichimoku.instance_config import (
             RENKO_ETH_STRATEGY_CODE,
             RENKO_SOL_STRATEGY_CODE,
@@ -421,13 +497,15 @@ class Settings(BaseSettings):
 
         configs: List[RenkoInstanceConfig] = []
         sizing_mode = (self.renko_ichimoku_position_sizing_mode or "fixed").strip().lower()
-        sizing_common = {
-            "position_sizing_mode": sizing_mode,
-            "sizing_base_usd": self.renko_ichimoku_sizing_base_usd,
-            "margin_pct": self.renko_ichimoku_margin_pct,
-            "leverage": self.renko_ichimoku_leverage,
-            "profit_retain_pct": self.renko_ichimoku_profit_retain_pct,
-        }
+        def sizing_common(instance_id: str) -> dict:
+            return {
+                "position_sizing_mode": sizing_mode,
+                "sizing_base_usd": self._sizing_base_for_instance(instance_id),
+                "margin_pct": self.renko_ichimoku_margin_pct,
+                "leverage": self.renko_ichimoku_leverage,
+                "profit_retain_pct": self.renko_ichimoku_profit_retain_pct,
+            }
+
         if self.renko_ichimoku_strategy_enabled:
             configs.append(
                 RenkoInstanceConfig(
@@ -436,10 +514,10 @@ class Settings(BaseSettings):
                     symbol=self.renko_ichimoku_symbol,
                     box_size=self.renko_ichimoku_box_size,
                     position_size=self.renko_ichimoku_position_size,
-                    state_file=self.renko_ichimoku_state_file or "data/renko_ichimoku_eth_state.json",
+                    state_file=self.renko_ichimoku_state_file or self._renko_state_path("eth"),
                     candle_resolution=self.renko_ichimoku_candle_resolution,
                     flatten=self.renko_ichimoku_flatten,
-                    **sizing_common,
+                    **sizing_common("eth"),
                 )
             )
         if self.renko_ichimoku_sol_enabled:
@@ -450,10 +528,10 @@ class Settings(BaseSettings):
                     symbol=self.renko_ichimoku_sol_symbol,
                     box_size=self.renko_ichimoku_sol_box_size,
                     position_size=self.renko_ichimoku_sol_position_size,
-                    state_file=self.renko_ichimoku_sol_state_file or "data/renko_ichimoku_sol_state.json",
+                    state_file=self.renko_ichimoku_sol_state_file or self._renko_state_path("sol"),
                     candle_resolution=self.renko_ichimoku_candle_resolution,
                     flatten=self.renko_ichimoku_sol_flatten,
-                    **sizing_common,
+                    **sizing_common("sol"),
                 )
             )
         if self.renko_ichimoku_xrp_enabled:
@@ -464,12 +542,43 @@ class Settings(BaseSettings):
                     symbol=self.renko_ichimoku_xrp_symbol,
                     box_size=self.renko_ichimoku_xrp_box_size,
                     position_size=self.renko_ichimoku_xrp_position_size,
-                    state_file=self.renko_ichimoku_xrp_state_file or "data/renko_ichimoku_xrp_state.json",
+                    state_file=self.renko_ichimoku_xrp_state_file or self._renko_state_path("xrp"),
                     candle_resolution=self.renko_ichimoku_candle_resolution,
                     flatten=self.renko_ichimoku_xrp_flatten,
-                    **sizing_common,
+                    **sizing_common("xrp"),
                 )
             )
+        for alt_id in parse_enabled_alt_ids(self.renko_ichimoku_alts_enabled):
+            spec = RENKO_ALT_REGISTRY[alt_id]
+            prefix = alt_id.upper()
+            symbol = self._renko_env_str(f"RENKO_ICHIMOKU_{prefix}_SYMBOL", spec.default_symbol)
+            box = self._renko_env_float(f"RENKO_ICHIMOKU_{prefix}_BOX_SIZE", spec.default_box_usd)
+            pos_raw = os.getenv(f"RENKO_ICHIMOKU_{prefix}_POSITION_SIZE")
+            position_size = float(pos_raw) if pos_raw is not None and str(pos_raw).strip() else 0.0
+            flatten_raw = os.getenv(f"RENKO_ICHIMOKU_{prefix}_FLATTEN", "").strip().lower()
+            flatten = flatten_raw in ("1", "true", "yes")
+            configs.append(
+                RenkoInstanceConfig(
+                    instance_id=spec.instance_id,
+                    strategy_code=spec.strategy_code,
+                    symbol=symbol,
+                    box_size=box,
+                    position_size=position_size,
+                    state_file=self._renko_state_path(spec.instance_id),
+                    candle_resolution=self.renko_ichimoku_candle_resolution,
+                    flatten=flatten,
+                    **sizing_common(alt_id),
+                )
+            )
+        bound: List[RenkoInstanceConfig] = []
+        for c in configs:
+            acct, key, secret = self._renko_credentials_for_instance(c.instance_id)
+            bound.append(replace(c, account_name=acct, api_key=key, api_secret=secret))
+        configs = bound
+        if self.renko_ichimoku_split_margin_across_book and configs:
+            div = max(1, len(configs))
+            scaled_margin = float(self.renko_ichimoku_margin_pct) / div
+            configs = [replace(c, margin_pct=scaled_margin) for c in configs]
         return configs
 
     def get_parsed_entry_time(self) -> time:

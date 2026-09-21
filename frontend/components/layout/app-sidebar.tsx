@@ -16,13 +16,17 @@ import {
   Waypoints,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ENGINE_STRATEGIES } from "@/lib/engine-strategies";
+
+const engineNav = ENGINE_STRATEGIES.map((s) => ({
+  href: `/engine/${s.slug}`,
+  label: s.label,
+  icon: s.kind === "strangle" ? Layers : CandlestickChart,
+}));
 
 const primaryNav = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
-  { href: "/engine/eth", label: "Renko ETH", icon: CandlestickChart },
-  { href: "/engine/sol", label: "Renko SOL", icon: CandlestickChart },
-  { href: "/engine/xrp", label: "Renko XRP", icon: CandlestickChart },
-  { href: "/engine/strangle", label: "BTC Strangle", icon: Layers },
+  ...engineNav,
   { href: "/performance", label: "Performance", icon: LineChart },
   { href: "/trades", label: "Trades", icon: Activity },
   { href: "/orders", label: "Orders", icon: ListOrdered },

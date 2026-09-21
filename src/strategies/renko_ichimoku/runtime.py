@@ -14,6 +14,7 @@ from src.exchanges.delta.fill_fees import commissions_by_order_id
 from src.execution.execution_engine import ExecutionEngine
 from src.execution.order_manager import OrderManager
 from src.strategies.renko_ichimoku.ichimoku import IncrementalIchimoku
+from src.strategies.renko_ichimoku.asset_registry import DEFAULT_RENKO_SIZING_BASE_USD
 from src.strategies.renko_ichimoku.params import RENKO_ICHIMOKU_FIXED_PARAMS
 from src.strategies.renko_ichimoku.position_sizing import (
     apply_exit_to_sizing_equity,
@@ -165,7 +166,7 @@ class RenkoIchimokuRuntime:
         instance_id: str = "eth",
         strategy_code: str = "renko_ichimoku_eth",
         position_sizing_mode: str = "fixed",
-        sizing_base_usd: float = 100.0,
+        sizing_base_usd: float = DEFAULT_RENKO_SIZING_BASE_USD,
         margin_pct: float = 0.25,
         leverage: float = 10.0,
         profit_retain_pct: float = 0.5,

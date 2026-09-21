@@ -199,7 +199,20 @@ async def main() -> None:
     await adapter.initialize()
 
     product_by_inst = {"ETH": "3136", "SOL": None, "XRP": None}
-    for name in ("sol", "xrp", "eth"):
+    registry_names = (
+        "eth",
+        "sol",
+        "xrp",
+        "btc",
+        "bnb",
+        "doge",
+        "ada",
+        "trx",
+        "avax",
+        "link",
+        "hype",
+    )
+    for name in registry_names:
         p = Path(f"data/renko_ichimoku_{name}_state_live.json")
         if p.exists():
             import json

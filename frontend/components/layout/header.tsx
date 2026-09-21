@@ -6,6 +6,7 @@ import { Activity } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { UserMenu } from "@/components/auth/user-menu";
 import { useSystemStatus } from "@/hooks/useSystemStatus";
+import { openRenkoEngineStrategies } from "@/lib/renko-status";
 
 export function Header() {
   const [timeUtc, setTimeUtc] = useState<string>("");
@@ -41,9 +42,7 @@ export function Header() {
   }, []);
 
   const engineStatus = statusData?.engine?.status || "STOPPED";
-  const renkoEthActive = (statusData?.strategies?.renko_ichimoku_eth?.position ?? 0) !== 0;
-  const renkoSolActive = (statusData?.strategies?.renko_ichimoku_sol?.position ?? 0) !== 0;
-  const renkoXrpActive = (statusData?.strategies?.renko_ichimoku_xrp?.position ?? 0) !== 0;
+  const openRenkoStrategies = openRenkoEngineStrategies(statusData);
   const strangleActive = !!(
     statusData?.current_trade?.trade_id &&
     statusData.current_trade.trade_state !== "COMPLETED"
@@ -67,7 +66,7 @@ export function Header() {
                 </Badge>
               </div>
               <p className="text-[11px] text-muted-foreground font-mono hidden sm:block">
-                BTC STRANGLE • RENKO ETH/SOL/XRP • DELTA INDIA
+                MULTI-RENKO • DELTA INDIA
               </p>
             </div>
           </Link>
@@ -93,27 +92,13 @@ export function Header() {
                   </Badge>
                 </Link>
               )}
-              {renkoEthActive && (
-                <Link href="/engine/eth">
+              {openRenkoStrategies.map((s) => (
+                <Link key={s.slug} href={`/engine/${s.slug}`}>
                   <Badge variant="info" className="text-[10px] py-0.5">
-                    RENKO ETH
+                    {s.shortLabel} OPEN
                   </Badge>
                 </Link>
-              )}
-              {renkoSolActive && (
-                <Link href="/engine/sol">
-                  <Badge variant="info" className="text-[10px] py-0.5">
-                    RENKO SOL
-                  </Badge>
-                </Link>
-              )}
-              {renkoXrpActive && (
-                <Link href="/engine/xrp">
-                  <Badge variant="info" className="text-[10px] py-0.5">
-                    RENKO XRP
-                  </Badge>
-                </Link>
-              )}
+              ))}
               <Badge
                 variant={isSafeHalt ? "destructive" : isRunning ? "success" : "outline"}
                 className="text-[10px] py-0.5"

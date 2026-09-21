@@ -154,6 +154,30 @@ def test_renko_instance_configs_eth_sol_and_xrp():
     assert configs[2].position_size == 100
 
 
+def test_renko_default_sizing_base_is_50():
+    s = _settings(renko_ichimoku_strategy_enabled=True)
+    cfg = s.renko_instance_configs()[0]
+    assert cfg.sizing_base_usd == 50.0
+
+
+def test_renko_instance_configs_registry_alts_and_margin_split():
+    s = _settings(
+        renko_ichimoku_strategy_enabled=True,
+        renko_ichimoku_alts_enabled="btc,link",
+        renko_ichimoku_split_margin_across_book=True,
+        renko_ichimoku_margin_pct=0.25,
+    )
+    configs = s.renko_instance_configs()
+    assert len(configs) == 3
+    ids = {c.instance_id for c in configs}
+    assert ids == {"eth", "btc", "link"}
+    assert configs[0].strategy_code == "renko_ichimoku_eth"
+    assert configs[1].strategy_code == "renko_ichimoku_btc"
+    assert configs[1].box_size == 218.0
+    for c in configs:
+        assert abs(c.margin_pct - 0.25 / 3) < 1e-9
+
+
 def test_engine_starts_eth_sol_and_xrp_runtimes():
     engine = TradingEngine(
         settings=_settings(

@@ -184,11 +184,8 @@ export const SystemStatusSchema = z.object({
           active: z.boolean().optional(),
         })
         .optional(),
-      renko_ichimoku_eth: RenkoSnapshotSchema.optional(),
-      renko_ichimoku_sol: RenkoSnapshotSchema.optional(),
-      renko_ichimoku_xrp: RenkoSnapshotSchema.optional(),
-      renko_ichimoku: RenkoSnapshotSchema.optional(),
     })
+    .catchall(RenkoSnapshotSchema.nullable().optional())
     .optional(),
   alerts: z.object({
     recent_count: z.number().default(0),

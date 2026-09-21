@@ -3,16 +3,15 @@
 import React from "react";
 import { RefreshCw } from "lucide-react";
 import { useSystemStatus } from "@/hooks/useSystemStatus";
-import { usePerformanceMetrics } from "@/hooks/usePerformanceMetrics";
 import { ApiErrorBanner } from "@/components/ui/api-error-banner";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/ui/page-header";
 import { EngineStatusBar } from "@/components/dashboard/engine-status-bar";
-import { StrategySummaryCard } from "@/components/dashboard/strategy-summary-card";
+import { StrategySummaryCardLoader } from "@/components/dashboard/strategy-summary-card-loader";
 import { SystemHealth } from "@/components/dashboard/system-health";
 import { RiskSafety } from "@/components/dashboard/risk-safety";
 import { PlatformPortfolioSection } from "@/components/platform/platform-portfolio";
-import { ENGINE_STRATEGIES } from "@/lib/engine-strategies";
+import { liveEngineStrategies } from "@/lib/renko-status";
 
 export default function DashboardPage() {
   const {
@@ -30,24 +29,8 @@ export default function DashboardPage() {
     isDbConnected,
   } = useSystemStatus();
 
-  const strangleMetrics = usePerformanceMetrics({ strategy_name: "short_strangle" });
-  const ethMetrics = usePerformanceMetrics({ strategy_name: "renko_ichimoku_eth" });
-  const solMetrics = usePerformanceMetrics({ strategy_name: "renko_ichimoku_sol" });
-  const xrpMetrics = usePerformanceMetrics({ strategy_name: "renko_ichimoku_xrp" });
-
-  const metricsBySlug = {
-    eth: ethMetrics,
-    sol: solMetrics,
-    xrp: xrpMetrics,
-    strangle: strangleMetrics,
-  };
-
   const handleRefreshAll = () => {
     refetchStatus();
-    strangleMetrics.refetch();
-    ethMetrics.refetch();
-    solMetrics.refetch();
-    xrpMetrics.refetch();
   };
 
   const strangleOpen = !!(
@@ -55,11 +38,13 @@ export default function DashboardPage() {
     statusData.current_trade.trade_state !== "COMPLETED"
   );
 
+  const liveStrategies = liveEngineStrategies(statusData);
+
   return (
     <div className="space-y-5 pb-10">
       <PageHeader
         title="Overview"
-        description="Account snapshot plus one card per live strategy. Open a strategy page for its graphs and trades."
+        description="One card per strategy enabled in the engine (.env). OFF coins are hidden here."
         action={
           <Button variant="outline" size="sm" onClick={handleRefreshAll} className="h-8 text-[11px]">
             <RefreshCw className="h-3 w-3 mr-1.5" />
@@ -97,12 +82,10 @@ export default function DashboardPage() {
           Strategy pages
         </h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-          {ENGINE_STRATEGIES.map((strategy) => (
-            <StrategySummaryCard
+          {liveStrategies.map((strategy) => (
+            <StrategySummaryCardLoader
               key={strategy.slug}
               strategy={strategy}
-              metrics={metricsBySlug[strategy.slug].metrics}
-              isLoading={metricsBySlug[strategy.slug].isLoading}
               snapshot={
                 strategy.snapshotKey ? statusData?.strategies?.[strategy.snapshotKey] : null
               }

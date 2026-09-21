@@ -1,5 +1,7 @@
 /** Strategy-specific subscription configuration schemas (backend-supported fields only). */
 
+import { RENKO_ALT_SLUGS, renkoStrategyCode } from "@/lib/renko-assets";
+
 export type ConfigFieldType = "number" | "select" | "text";
 
 export interface StrategyConfigField {
@@ -159,6 +161,36 @@ const SCHEMAS: Record<string, StrategyConfigSchema> = {
     ],
   },
 };
+
+function renkoSubscriptionSchema(strategyCode: string, defaultContracts = 0): StrategyConfigSchema {
+  return {
+    strategyCode,
+    fields: [
+      {
+        key: "position_size",
+        label: "Position size (contracts)",
+        type: "number",
+        defaultValue: defaultContracts,
+        min: 0,
+        step: 1,
+      },
+      {
+        key: "allocation_pct",
+        label: "Capital allocation %",
+        type: "number",
+        defaultValue: 100,
+        min: 1,
+        max: 100,
+        step: 1,
+      },
+    ],
+  };
+}
+
+for (const slug of RENKO_ALT_SLUGS) {
+  const code = renkoStrategyCode(slug);
+  SCHEMAS[code] = renkoSubscriptionSchema(code, 0);
+}
 
 export function getStrategyConfigSchema(code: string): StrategyConfigSchema {
   return (

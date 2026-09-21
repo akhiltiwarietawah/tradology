@@ -136,6 +136,7 @@ class TradingEngine:
         self.renko_adapter: Optional[DeltaExchangeAdapter] = None
         self.renko_order_manager: Optional[OrderManager] = None
         self.renko_execution: Optional[ExecutionEngine] = None
+        self._renko_extra_adapters: List[DeltaExchangeAdapter] = []
         self.renko_runtimes: List[RenkoIchimokuRuntime] = []
         if self.settings.has_any_renko_enabled():
             self._init_renko_ichimoku()
@@ -171,14 +172,15 @@ class TradingEngine:
 
     def _init_renko_ichimoku(self) -> None:
         """Wire isolated Renko runtimes (ETH, SOL, …). Never reuses strangle OrderManager or state files."""
+        from collections import defaultdict
+
         instances = self.settings.renko_instance_configs()
         if not instances:
             return
         separate = self.settings.uses_separate_renko_account()
         use_shared_primary = self.settings.renko_uses_shared_primary_adapter()
-        if separate and not use_shared_primary and (
-            not self.settings.renko_ichimoku_api_key or not self.settings.renko_ichimoku_api_secret
-        ):
+        default_key, default_secret = self.settings.renko_api_credentials()
+        if any(not cfg.api_key or not cfg.api_secret for cfg in instances):
             self.logger.error(
                 "[RENKO_ICHIMOKU] RENKO_ICHIMOKU_ACCOUNT differs from EXISTING_STRATEGY_ACCOUNT "
                 "and strangle is enabled, but RENKO_ICHIMOKU_API_KEY / RENKO_ICHIMOKU_API_SECRET are empty. "
@@ -186,43 +188,106 @@ class TradingEngine:
             )
             return
         is_live = self.settings.delta_env.value == "live"
-        if separate and not use_shared_primary:
-            key, secret = self.settings.renko_api_credentials()
-            self.renko_adapter = DeltaExchangeAdapter(
-                rest_url=self.settings.active_rest_url,
-                ws_url=self.settings.active_ws_url,
-                api_key=key,
-                api_secret=secret,
-                is_testnet=not is_live,
-                logger=PrefixLogger(self.logger, "RENKO_ICHIMOKU"),
-            )
-            self.renko_adapter._exchange_name = "delta_india_renko"
-        else:
-            self.renko_adapter = self.delta_adapter
-        self.renko_order_manager = OrderManager(logger=PrefixLogger(self.logger, "RENKO_ICHIMOKU"))
-        self.renko_execution = ExecutionEngine(
-            exchange_adapter=self.renko_adapter,
-            order_manager=self.renko_order_manager,
-            trade_logger=self.trade_logger,
-            entry_timeout_seconds=self.settings.two_leg_entry_timeout_seconds,
-            logger=PrefixLogger(self.logger, "RENKO_ICHIMOKU"),
-        )
-        bridge = DeltaCandleProductBridge(self.renko_adapter, PrefixLogger(self.logger, "RENKO_ICHIMOKU"))
+        primary_key = self.settings.active_api_key
+        primary_secret = self.settings.active_api_secret
+
+        def _credential_group(cfg) -> str:
+            if cfg.api_key and cfg.api_secret:
+                if cfg.api_key == primary_key and cfg.api_secret == primary_secret:
+                    return "primary"
+                if (
+                    default_key
+                    and default_secret
+                    and cfg.api_key == default_key
+                    and cfg.api_secret == default_secret
+                    and not (separate and not use_shared_primary)
+                ):
+                    return "primary"
+                return f"acct:{cfg.api_key[:8]}"
+            if separate and not use_shared_primary and default_key:
+                return f"acct:{default_key[:8]}"
+            return "primary"
+
+        grouped: dict[str, list] = defaultdict(list)
         for cfg in instances:
+            grouped[_credential_group(cfg)].append(cfg)
+
+        stacks: dict[str, tuple] = {}
+
+        def _build_stack(group_id: str, sample_cfg) -> tuple:
+            if group_id == "primary":
+                if separate and not use_shared_primary and default_key:
+                    adapter = DeltaExchangeAdapter(
+                        rest_url=self.settings.active_rest_url,
+                        ws_url=self.settings.active_ws_url,
+                        api_key=default_key,
+                        api_secret=default_secret,
+                        is_testnet=not is_live,
+                        logger=PrefixLogger(self.logger, "RENKO_ICHIMOKU"),
+                    )
+                    adapter._exchange_name = "delta_india_renko"
+                    if self.renko_adapter is None:
+                        self.renko_adapter = adapter
+                    else:
+                        self._renko_extra_adapters.append(adapter)
+                else:
+                    adapter = self.delta_adapter
+                    self.renko_adapter = adapter
+            else:
+                adapter = DeltaExchangeAdapter(
+                    rest_url=self.settings.active_rest_url,
+                    ws_url=self.settings.active_ws_url,
+                    api_key=sample_cfg.api_key,
+                    api_secret=sample_cfg.api_secret,
+                    is_testnet=not is_live,
+                    logger=PrefixLogger(self.logger, f"RENKO_ICHIMOKU_{sample_cfg.instance_id.upper()}"),
+                )
+                adapter._exchange_name = f"delta_india_renko_{sample_cfg.instance_id}"
+                self._renko_extra_adapters.append(adapter)
+                if self.renko_adapter is None:
+                    self.renko_adapter = adapter
+            order_manager = OrderManager(logger=PrefixLogger(self.logger, f"RENKO_{group_id}"))
+            execution = ExecutionEngine(
+                exchange_adapter=adapter,
+                order_manager=order_manager,
+                trade_logger=self.trade_logger,
+                entry_timeout_seconds=self.settings.two_leg_entry_timeout_seconds,
+                logger=PrefixLogger(self.logger, f"RENKO_{group_id}"),
+            )
+            bridge = DeltaCandleProductBridge(adapter, PrefixLogger(self.logger, f"RENKO_{group_id}"))
+            if self.renko_order_manager is None:
+                self.renko_order_manager = order_manager
+                self.renko_execution = execution
+            return adapter, order_manager, execution, bridge
+
+        from src.strategies.renko_ichimoku.asset_registry import RENKO_SOFT_MAX_PER_WALLET
+
+        for group_id, cfgs in grouped.items():
+            stacks[group_id] = _build_stack(group_id, cfgs[0])
+            if len(cfgs) > RENKO_SOFT_MAX_PER_WALLET:
+                self.logger.warning(
+                    f"[RENKO_ICHIMOKU] {len(cfgs)} instances share wallet group '{group_id}' "
+                    f"(recommended max {RENKO_SOFT_MAX_PER_WALLET} per account for margin headroom). "
+                    f"Coins: {', '.join(c.instance_id.upper() for c in cfgs)}"
+                )
+
+        for cfg in instances:
+            group_id = _credential_group(cfg)
+            adapter, order_manager, execution, bridge = stacks[group_id]
             runtime = RenkoIchimokuRuntime(
-                account_name=self.settings.renko_ichimoku_account,
+                account_name=cfg.account_name,
                 symbol=cfg.symbol,
                 position_size=cfg.position_size,
                 candle_resolution=cfg.candle_resolution,
                 state_file=cfg.state_file,
-                execution_engine=self.renko_execution,
-                order_manager=self.renko_order_manager,
+                execution_engine=execution,
+                order_manager=order_manager,
                 candle_source=bridge,
                 product_source=bridge,
                 logger=self.logger,
                 dry_run=self.settings.dry_run,
                 kill_switch=self.settings.kill_switch,
-                exchange_ops=self.renko_adapter,
+                exchange_ops=adapter,
                 flatten=cfg.flatten,
                 fill_persister=self._persist_renko_fill_to_db,
                 manual_close_persister=self._persist_renko_manual_close_to_db,
@@ -243,9 +308,9 @@ class TradingEngine:
                 else f"fixed size={cfg.position_size}"
             )
             self.logger.info(
-                f"[RENKO_{cfg.instance_id.upper()}] Configured account={self.settings.renko_ichimoku_account} "
+                f"[RENKO_{cfg.instance_id.upper()}] Configured account={cfg.account_name} "
                 f"symbol={cfg.symbol} box={cfg.box_size} sizing={sizing_desc} "
-                f"state={cfg.state_file} separate_account={separate}"
+                f"state={cfg.state_file} delta_keys={'per-instance' if group_id != 'primary' else 'shared'}"
             )
 
     def _warn_if_renko_disabled_with_open_state(self) -> None:
@@ -255,7 +320,7 @@ class TradingEngine:
         from pathlib import Path
         from src.strategies.renko_ichimoku.state import RenkoIchimokuStateStore
 
-        candidates = self.settings.all_renko_state_files()
+        candidates = self.settings.renko_state_file_candidates()
         for path in candidates:
             if not path or not Path(path).exists():
                 continue
@@ -378,8 +443,15 @@ class TradingEngine:
                 )
 
         if self.renko_runtimes:
-            if self.renko_adapter is not None and self.renko_adapter is not self.delta_adapter:
-                await self.renko_adapter.initialize()
+            renko_adapters = []
+            if self.renko_adapter is not None:
+                renko_adapters.append(self.renko_adapter)
+            for extra in self._renko_extra_adapters:
+                if extra is not self.renko_adapter:
+                    renko_adapters.append(extra)
+            for adapter in renko_adapters:
+                if adapter is not self.delta_adapter:
+                    await adapter.initialize()
             for runtime in self.renko_runtimes:
                 await runtime.start()
                 await self._backfill_renko_db_if_needed(runtime)
@@ -446,8 +518,9 @@ class TradingEngine:
             await self.db_manager.disconnect()
 
         await self.exchange_service.close_all()
-        if self.renko_adapter is not None and self.renko_adapter is not self.delta_adapter:
-            await self.renko_adapter.close()
+        for adapter in [self.renko_adapter, *self._renko_extra_adapters]:
+            if adapter is not None and adapter is not self.delta_adapter:
+                await adapter.close()
         self.logger.info("Trading Engine stopped cleanly.")
 
     async def reconcile_state(self, trade: Optional[StrategyTrade] = None) -> ReconciliationResult:

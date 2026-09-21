@@ -1,4 +1,4 @@
-# Renko + Ichimoku (ETH / SOL / XRP — independent strategies)
+# Renko + Ichimoku (multi-asset — independent strategies)
 
 This strategy is **separate** from the BTC 0DTE short strangle. Each symbol (ETH, SOL, XRP) has its own state file, order IDs, and position. Short-strangle trading logic is not used here.
 
@@ -16,6 +16,8 @@ Ichimoku lengths are **fixed** (not for optimization):
 | `RENKO_ICHIMOKU_STRATEGY_ENABLED` | `false` | ETH Renko (`renko_ichimoku_eth`) on/off |
 | `RENKO_ICHIMOKU_SOL_ENABLED` | `false` | SOL Renko (`renko_ichimoku_sol`) on/off — independent |
 | `RENKO_ICHIMOKU_XRP_ENABLED` | `false` | XRP Renko (`renko_ichimoku_xrp`) on/off — independent |
+| `RENKO_ICHIMOKU_ALTS_ENABLED` | empty | Comma list from registry: `btc,bnb,doge,ada,trx,avax,link,hype` |
+| `RENKO_ICHIMOKU_SPLIT_MARGIN_ACROSS_BOOK` | `false` | If `true`, `MARGIN_PCT` is divided by the number of enabled instances (one account) |
 
 ## Accounts
 
@@ -58,7 +60,36 @@ If `RENKO_ICHIMOKU_ACCOUNT` equals `EXISTING_STRATEGY_ACCOUNT`, both strategies 
 
 **Dynamic mode** sizes from virtual `sizing_equity` (starts at `SIZING_BASE_USD`), capped by live wallet on each entry: effective equity = `min(account_balance, virtual sizing_equity)`. Example: `$60` virtual base → `$15` margin per trade → `$150` notional at `10x` (each asset uses its own 25% slice when it signals). After each exit, virtual equity uses **net** PnL (`gross fill PnL − entry/exit commissions`); then 50% of a **net win** is retained. Contract size uses each product's real `contract_value` from Delta (e.g. ETH `0.01`, SOL `1`, XRP per product spec).
 
-Logs use `[EXISTING]`, `[RENKO_ETH]`, `[RENKO_SOL]`, and `[RENKO_XRP]`.
+### Separate books (default) — like ETH / SOL / XRP today
+
+Each enabled coin is already **independent**:
+
+- Own **state file** and **virtual `sizing_equity`** (dynamic mode + `PROFIT_RETAIN_PCT`)
+- Own **strategy_code** in the DB (`renko_ichimoku_eth`, `renko_ichimoku_btc`, …)
+- Own **25% margin rule** applied to `min(that wallet balance, that virtual equity)` — not shared with other coins
+
+You do **not** need `RENKO_ICHIMOKU_SPLIT_MARGIN_ACROSS_BOOK` when each coin trades on **its own Delta account** (recommended for many alts). Use split margin only if several coins share **one** wallet and you want to divide `MARGIN_PCT` by instance count.
+
+### Separate Delta accounts per coin (one engine)
+
+Optional per-instance credentials (fallback: global `RENKO_ICHIMOKU_API_*` or `DELTA_LIVE_*`):
+
+| Variable | Example |
+|---|---|
+| `RENKO_ICHIMOKU_ETH_ACCOUNT` | `renko_eth` (platform label) |
+| `RENKO_ICHIMOKU_ETH_API_KEY` / `_API_SECRET` | Delta keys for the ETH wallet |
+| `RENKO_ICHIMOKU_SOL_API_KEY` / … | SOL wallet |
+| `RENKO_ICHIMOKU_BTC_API_KEY` / … | registry alts use the same pattern |
+
+The engine groups instances by API key and opens one Delta adapter per wallet. Balance for sizing is read from **that** account only.
+
+### One wallet, many coins
+
+If all instances use the same API keys, each entry still uses its own virtual book but **the same** exchange balance — several simultaneous positions can over-subscribe margin. Prefer separate accounts or `RENKO_ICHIMOKU_SPLIT_MARGIN_ACROSS_BOOK=true`.
+
+Run `migrations/012_renko_alt_strategies.sql` for platform DB rows. Confirm each symbol on Delta (especially `hype`).
+
+Logs use `[RENKO_<INSTANCE>]` (e.g. `[RENKO_ETH]`, `[RENKO_BTC]`).
 
 ## How to run
 
