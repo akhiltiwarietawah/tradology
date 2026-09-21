@@ -906,8 +906,8 @@ class TradingEngine:
             symbol=rt.symbol,
             side=OrderSide.SELL if local_side > 0 else OrderSide.BUY,
             order_type=OrderType.MARKET,
-            quantity=rt.position_size,
-            filled_quantity=rt.position_size,
+            quantity=float(rt.state.open_quantity or rt._expected_open_quantity() or rt.position_size),
+            filled_quantity=float(rt.state.open_quantity or rt._expected_open_quantity() or rt.position_size),
             average_fill_price=exit_price or entry_price or last_brick_close,
             state=OrderState.FILLED,
             strategy_id=rt.strategy_code,
@@ -921,6 +921,7 @@ class TradingEngine:
             },
         )()
         reason = "position_manually_closed"
+        exit_qty = float(rt.state.open_quantity or rt._expected_open_quantity() or rt.position_size or 0)
         async with asyncio.timeout(self.settings.db_timeout_seconds):
             await self.renko_trade_repo.record_exit(
                 trade_id=trade_id,
@@ -930,7 +931,8 @@ class TradingEngine:
                 action_reason=reason,
                 entry_price=float(entry_price or synth_brick.close or 0.0),
                 entry_time=entry_time,
-                quantity=rt.position_size,
+                quantity=exit_qty,
+                contract_value=rt.contract_value,
                 config_extra={
                     "manual_close_entry_order_id": entry_order_id,
                     "manual_close_exit_order_id": exit_order_id,
@@ -941,6 +943,19 @@ class TradingEngine:
             f"entry_order_id={entry_order_id} exit_order_id={exit_order_id}"
         )
         self.last_db_operation_time = datetime.now(timezone.utc)
+
+    @staticmethod
+    def _renko_persist_quantity(runtime: RenkoIchimokuRuntime, order, action_kind: str) -> float:
+        filled = float(order.filled_quantity or 0)
+        if action_kind in ("exit_long", "exit_short"):
+            return float(
+                runtime.state.open_quantity
+                or filled
+                or runtime._expected_open_quantity()
+            )
+        if filled > 0:
+            return filled
+        return float(runtime._expected_open_quantity() or runtime.position_size or 0)
 
     async def _persist_renko_fill_to_db(self, **kwargs) -> None:
         """Persist Renko entry/exit lifecycle to PostgreSQL (non-blocking for trading)."""
@@ -969,7 +984,8 @@ class TradingEngine:
                     account_name=rt.account_name,
                     symbol=rt.symbol,
                     product_id=str(rt.instrument_id),
-                    quantity=rt.position_size,
+                    quantity=self._renko_persist_quantity(rt, order, action_kind),
+                    contract_value=rt.contract_value,
                     config_snapshot=config_snapshot,
                     strategy_name=rt.strategy_code,
                 )
@@ -981,6 +997,7 @@ class TradingEngine:
                     rt.state.last_traded_brick_index or brick.index,
                     instance_id=rt.instance_id,
                 )
+                qty = self._renko_persist_quantity(rt, order, action_kind)
                 await self.renko_trade_repo.record_exit(
                     trade_id=trade_id,
                     order=order,
@@ -989,7 +1006,8 @@ class TradingEngine:
                     action_reason=action_reason,
                     entry_price=float(rt.state.entry_price or order.average_fill_price or brick.close),
                     entry_time=rt.state.entry_time,
-                    quantity=rt.position_size,
+                    quantity=qty,
+                    contract_value=rt.contract_value,
                 )
                 self.logger.info(f"[RENKO_ICHIMOKU] DATABASE: persisted exit trade_id={trade_id}")
         self.last_db_operation_time = datetime.now(timezone.utc)
@@ -1036,11 +1054,11 @@ class TradingEngine:
                     symbol=st.resolved_symbol or runtime.symbol,
                     side=OrderSide.BUY if st.position > 0 else OrderSide.SELL,
                     order_type=OrderType.MARKET,
-                    quantity=runtime.position_size,
-                    filled_quantity=runtime.position_size,
+                    quantity=float(st.open_quantity or runtime._expected_open_quantity() or runtime.position_size),
+                    filled_quantity=float(st.open_quantity or runtime._expected_open_quantity() or runtime.position_size),
                     average_fill_price=st.entry_price,
                     state=OrderState.FILLED,
-                    strategy_id=rt.strategy_code,
+                    strategy_id=runtime.strategy_code,
                 )
                 await self.renko_trade_repo.record_entry(
                     trade_id=trade_id,
@@ -1051,7 +1069,8 @@ class TradingEngine:
                     account_name=self.settings.renko_ichimoku_account,
                     symbol=runtime.symbol,
                     product_id=str(runtime.instrument_id),
-                    quantity=runtime.position_size,
+                    quantity=float(st.open_quantity or runtime._expected_open_quantity() or runtime.position_size),
+                    contract_value=runtime.contract_value,
                     config_snapshot={
                         "instance_id": runtime.instance_id,
                         "box_size": runtime.box_size,

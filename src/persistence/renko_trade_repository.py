@@ -167,6 +167,7 @@ class RenkoTradeRepository:
         entry_time: Optional[float] = None,
         quantity: float,
         contract_value: float = 0.01,
+        fees: float = 0.0,
         config_extra: Optional[Dict[str, Any]] = None,
     ) -> None:
         now = datetime.now(timezone.utc)
@@ -177,6 +178,8 @@ class RenkoTradeRepository:
         qty = to_decimal(quantity)
         cv = to_decimal(contract_value)
         realized = _perp_realized_pnl(leg_type, entry_px, exit_px, qty, cv)
+        fee_dec = to_decimal(fees)
+        net = realized - fee_dec
         exit_notional = round(exit_px * qty * cv, 4)
         entry_notional = round(entry_px * qty * cv, 4)
         entry_dt = (
@@ -212,7 +215,7 @@ class RenkoTradeRepository:
             "stop_loss_price": None,
             "bracket_order_id": None,
             "realized_pnl": realized,
-            "fees": Decimal("0.0000"),
+            "fees": fee_dec,
             "status": "CLOSED",
             "created_at": entry_dt,
             "updated_at": now,
@@ -236,8 +239,8 @@ class RenkoTradeRepository:
             "total_entry_premium": entry_notional,
             "total_exit_premium": exit_notional,
             "realized_pnl": realized,
-            "total_fees": Decimal("0.0000"),
-            "net_pnl": realized,
+            "total_fees": fee_dec,
+            "net_pnl": net,
             "exit_reason": exit_reason_col,
             "strategy_config": merged_config,
             "created_at": entry_dt,
@@ -350,6 +353,7 @@ class RenkoTradeRepository:
         stmt = stmt.on_conflict_do_update(
             index_elements=[TradeLegModel.leg_id],
             set_={
+                "quantity": stmt.excluded.quantity,
                 "entry_price": stmt.excluded.entry_price,
                 "exit_price": stmt.excluded.exit_price,
                 "entry_time": stmt.excluded.entry_time,
