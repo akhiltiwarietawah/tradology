@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -170,6 +171,7 @@ class RenkoIchimokuRuntime:
         margin_pct: float = 0.25,
         leverage: float = 10.0,
         profit_retain_pct: float = 0.5,
+        alert_sender: Optional[Callable[..., Awaitable[bool]]] = None,
     ):
         self.account_name = account_name
         self.instance_id = instance_id
@@ -199,6 +201,8 @@ class RenkoIchimokuRuntime:
         self.margin_pct = float(margin_pct)
         self.leverage = float(leverage)
         self.profit_retain_pct = float(profit_retain_pct)
+        self.alert_sender = alert_sender
+        self._halt_alert_sent = False
         self._last_position_reconcile_ts = 0.0
         self._pending_order_quantity: float = 0.0
 
@@ -352,6 +356,51 @@ class RenkoIchimokuRuntime:
         self._trading_unlocked = False
         self.logger.critical(f"ORDERS HALTED: {reason}")
         self.store.save(self.state)
+        self._notify_halt(reason)
+
+    def _schedule_alert(
+        self,
+        *,
+        severity: str,
+        event: str,
+        message: str,
+        trade_id: Optional[str] = None,
+        force: bool = False,
+    ) -> None:
+        if not self.alert_sender:
+            return
+
+        async def _send() -> None:
+            try:
+                await self.alert_sender(
+                    severity=severity,
+                    event=event,
+                    message=message,
+                    trade_id=trade_id,
+                    force=force,
+                )
+            except Exception as e:
+                self.logger.warning(f"Alert {event} failed: {type(e).__name__}: {e}")
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_send())
+        except RuntimeError:
+            pass
+
+    def _notify_halt(self, reason: str) -> None:
+        """Fire CRITICAL alert once per halt (Telegram if enabled). Never raises."""
+        if self._halt_alert_sent:
+            return
+        self._halt_alert_sent = True
+        coin = (self.instance_id or self.symbol or "renko").upper()
+        self._schedule_alert(
+            severity="CRITICAL",
+            event="RENKO_HALT",
+            message=f"🚨 RENKO {coin} ORDERS HALTED: {reason}",
+            trade_id=f"renko_{self.instance_id}",
+            force=True,
+        )
 
     def _clear_reconcile_halt(self) -> None:
         """Resume after reconcile confirms local and exchange positions agree."""
@@ -364,6 +413,7 @@ class RenkoIchimokuRuntime:
         self._trading_unlocked = True
         self.logger.info(f"Exchange position reconcile OK. Trading resumed (was halted: {prev}).")
         self.store.save(self.state)
+        self._halt_alert_sent = False
 
     async def start(self) -> None:
         if not is_valid_sizing_mode(self.position_sizing_mode):
@@ -457,6 +507,8 @@ class RenkoIchimokuRuntime:
         self._started = True
         if not self.state.orders_halted:
             self._trading_unlocked = True
+        elif self.state.halt_reason:
+            self._notify_halt(str(self.state.halt_reason))
         self.store.save(self.state)
 
     async def on_timer(self, now_ist: Optional[datetime] = None) -> None:
@@ -578,6 +630,18 @@ class RenkoIchimokuRuntime:
                 )
             else:
                 self.logger.warning("RENKO_ICHIMOKU_POSITION_SIZE is 0. Signal logged, no order sent.")
+            coin = (self.instance_id or self.symbol or "renko").upper()
+            virt = float(self.state.sizing_equity or 0.0)
+            self._schedule_alert(
+                severity="WARNING",
+                event="RENKO_NO_SIZE",
+                message=(
+                    f"⚠️ RENKO {coin} {action.kind}: 0 contracts "
+                    f"(virtual=${virt:.2f}, mark={brick.close}, cv={self.contract_value}). No order."
+                ),
+                trade_id=f"renko_{self.instance_id}_{brick.index}_{action.kind}",
+                force=True,
+            )
             return True
         if not self.instrument_id:
             self._halt("No instrument_id; cannot place order.")
@@ -722,6 +786,7 @@ class RenkoIchimokuRuntime:
             exit_fill_fee=exit_fill_fee,
         )
         self._apply_fill(action.kind, order, brick, fees=fees)
+        self._alert_fill(action.kind, order, fees=fees)
 
     async def _persist_fill(
         self,
@@ -786,6 +851,26 @@ class RenkoIchimokuRuntime:
         self.logger.info(
             f"Fill applied action={action_kind} new_pos={self.state.position} "
             f"fill_px={fill_px} order_id={order.order_id} cid={order.client_order_id}"
+        )
+
+    def _alert_fill(self, action_kind: str, order: Order, *, fees: float = 0.0) -> None:
+        coin = (self.instance_id or self.symbol or "renko").upper()
+        fill_px = order.average_fill_price
+        qty = order.filled_quantity or self.state.open_quantity
+        virt = float(self.state.sizing_equity or 0.0)
+        pnl = self.state.last_realized_pnl
+        extra = ""
+        if action_kind.startswith("exit") and pnl is not None:
+            extra = f" net=${float(pnl):.2f}"
+        self._schedule_alert(
+            severity="SUCCESS" if not action_kind.startswith("exit") or (pnl or 0) >= 0 else "WARNING",
+            event="RENKO_FILL",
+            message=(
+                f"{'📈' if 'enter' in action_kind else '📉'} RENKO {coin} {action_kind} "
+                f"qty={qty} @ {fill_px} virtual=${virt:.2f}{extra}"
+            ),
+            trade_id=str(order.order_id or order.client_order_id or f"renko_{self.instance_id}"),
+            force=True,
         )
 
     def _clear_in_flight(self) -> None:

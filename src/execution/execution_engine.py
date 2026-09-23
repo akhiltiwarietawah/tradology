@@ -17,6 +17,20 @@ import time
 from src.logging_utils.events import TradingEventLogger
 
 
+HARD_ENTRY_REJECT_CODES = frozenset(
+    {
+        "insufficient_commission",
+        "insufficient_margin",
+        "insufficient_balance",
+        "insufficient_available_balance",
+        "max_leverage_exceeded",
+        "invalid_size",
+        "invalid_order",
+        "immediate_liquidation",
+    }
+)
+
+
 class ExecutionEngine(IExecutionEngine):
     """Executes strategy orders, manages multi-leg entry safety, and executes stop loss exits."""
 
@@ -153,6 +167,70 @@ class ExecutionEngine(IExecutionEngine):
             )
             raise e
 
+    @staticmethod
+    def _hard_entry_reject_code(exc: BaseException) -> Optional[str]:
+        status = getattr(exc, "status_code", None)
+        res_data = getattr(exc, "response_data", None)
+        code = None
+        if isinstance(res_data, dict):
+            err = res_data.get("error")
+            if isinstance(err, dict):
+                code = err.get("code")
+            elif isinstance(err, str):
+                code = err
+            code = code or res_data.get("error_code")
+        if status == 400 and code in HARD_ENTRY_REJECT_CODES:
+            return str(code)
+        return None
+
+    async def _confirmed_fill_for_request(self, request: OrderRequest) -> Optional[Order]:
+        """Accept a lookup order only if it is this request's fill, not another leg."""
+        cid = request.client_order_id
+        if not cid:
+            return None
+        try:
+            verified = await self.exchange.get_order_by_client_id(cid)
+        except Exception as e:
+            self.logger.warning(f"Could not verify order cid={cid} on exchange: {e}")
+            return None
+        if verified is None:
+            return None
+        if str(verified.client_order_id or "") != str(cid):
+            self.logger.warning(
+                f"Ignoring lookup for cid={cid}: exchange returned different "
+                f"cid={verified.client_order_id} order_id={verified.order_id}."
+            )
+            return None
+        if str(verified.instrument_id) != str(request.instrument_id):
+            self.logger.warning(
+                f"Ignoring lookup for cid={cid}: product {verified.instrument_id} "
+                f"!= requested {request.instrument_id}."
+            )
+            return None
+        if verified.state in (OrderState.REJECTED, OrderState.CANCELLED, OrderState.EXPIRED):
+            return None
+        filled = float(verified.filled_quantity or 0.0)
+        if verified.is_filled and filled > 0:
+            return verified
+        if verified.is_filled and filled <= 0:
+            try:
+                positions = await self.exchange.get_positions()
+            except Exception as e:
+                self.logger.warning(f"Position check after filled_qty=0 cid={cid}: {e}")
+                return None
+            for pos in positions:
+                same_id = str(pos.instrument_id) == str(request.instrument_id)
+                same_sym = str(pos.symbol).upper() == str(request.symbol).upper()
+                if (same_id or same_sym) and abs(float(pos.size or 0.0)) > 1e-9:
+                    self.logger.info(
+                        f"cid={cid} ack filled_qty=0 but exchange position size={pos.size}; treating as filled."
+                    )
+                    return verified
+            self.logger.warning(
+                f"cid={cid} state=filled filled_qty=0 and no matching position; not treating as fill."
+            )
+        return None
+
     async def execute_strangle_entry(
         self,
         trade: StrategyTrade,
@@ -179,6 +257,8 @@ class ExecutionEngine(IExecutionEngine):
         pe_order: Optional[Order] = None
         ce_failed = False
         pe_failed = False
+        pe_hard_reject = False
+        ce_hard_reject = False
 
         # Submit Leg 1 (CE)
         try:
@@ -188,6 +268,7 @@ class ExecutionEngine(IExecutionEngine):
         except Exception as e:
             self.logger.error(f"Failed to place CE entry order: {e}", exc_info=True)
             ce_failed = True
+            ce_hard_reject = self._hard_entry_reject_code(e) is not None
 
         # Submit Leg 2 (PE)
         try:
@@ -197,6 +278,7 @@ class ExecutionEngine(IExecutionEngine):
         except Exception as e:
             self.logger.error(f"Failed to place PE entry order: {e}", exc_info=True)
             pe_failed = True
+            pe_hard_reject = self._hard_entry_reject_code(e) is not None
 
         # CASE 1: Both Succeeded
         if not ce_failed and not pe_failed and ce_order and pe_order:
@@ -208,10 +290,14 @@ class ExecutionEngine(IExecutionEngine):
             self.logger.critical(
                 f"🚨 TWO-LEG ENTRY FAILURE: CE filled/placed but PE failed. Initiating immediate emergency unwind of CE leg!"
             )
-            # Verify PE on exchange first to ensure it did not fill quietly
-            if pe_request.client_order_id:
-                verified_pe = await self.exchange.get_order_by_client_id(pe_request.client_order_id)
-                if verified_pe and verified_pe.is_filled:
+            if pe_hard_reject:
+                self.logger.info(
+                    "PE failed with a hard exchange reject (e.g. insufficient margin/commission). "
+                    "Not treating PE as filled."
+                )
+            elif pe_request.client_order_id:
+                verified_pe = await self._confirmed_fill_for_request(pe_request)
+                if verified_pe:
                     self.logger.info("PE order was actually filled on exchange. Both legs intact.")
                     return True, ce_order, verified_pe
 
@@ -226,6 +312,8 @@ class ExecutionEngine(IExecutionEngine):
             trade.state = StrategyState.FAILED_ENTRY
             if trade.ce_leg:
                 trade.ce_leg.status = LegStatus.UNWOUND_ON_FAILURE
+            if trade.pe_leg:
+                trade.pe_leg.status = LegStatus.CANCELLED
             return False, ce_order, pe_order
 
         # CASE 3: PE Succeeded, CE Failed -> Emergency Unwind PE
@@ -233,9 +321,14 @@ class ExecutionEngine(IExecutionEngine):
             self.logger.critical(
                 f"🚨 TWO-LEG ENTRY FAILURE: PE filled/placed but CE failed. Initiating immediate emergency unwind of PE leg!"
             )
-            if ce_request.client_order_id:
-                verified_ce = await self.exchange.get_order_by_client_id(ce_request.client_order_id)
-                if verified_ce and verified_ce.is_filled:
+            if ce_hard_reject:
+                self.logger.info(
+                    "CE failed with a hard exchange reject (e.g. insufficient margin/commission). "
+                    "Not treating CE as filled."
+                )
+            elif ce_request.client_order_id:
+                verified_ce = await self._confirmed_fill_for_request(ce_request)
+                if verified_ce:
                     self.logger.info("CE order was actually filled on exchange. Both legs intact.")
                     return True, verified_ce, pe_order
 
@@ -250,6 +343,8 @@ class ExecutionEngine(IExecutionEngine):
             trade.state = StrategyState.FAILED_ENTRY
             if trade.pe_leg:
                 trade.pe_leg.status = LegStatus.UNWOUND_ON_FAILURE
+            if trade.ce_leg:
+                trade.ce_leg.status = LegStatus.CANCELLED
             return False, ce_order, pe_order
 
         # CASE 4: Both Failed

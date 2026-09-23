@@ -132,6 +132,8 @@ class TradingEngine:
         )
         self.strategy.logger = PrefixLogger(self.strategy.logger, "EXISTING")
 
+        self.alert_service = AlertService(settings=self.settings, logger=self.logger)
+
         # Independent ETHUSDT Renko + Ichimoku (optional). Does not share strangle state.
         self.renko_adapter: Optional[DeltaExchangeAdapter] = None
         self.renko_order_manager: Optional[OrderManager] = None
@@ -148,9 +150,6 @@ class TradingEngine:
             logger=self.logger,
         )
         self.scheduler.add_timer_callback(self._on_timer_tick)
-
-        # Alert & Monitoring Layer
-        self.alert_service = AlertService(settings=self.settings, logger=self.logger)
 
         # Watchdog & Health Timestamps
         self.start_time: datetime = datetime.now(timezone.utc)
@@ -299,6 +298,7 @@ class TradingEngine:
                 margin_pct=cfg.margin_pct,
                 leverage=cfg.leverage,
                 profit_retain_pct=cfg.profit_retain_pct,
+                alert_sender=self.alert_service.send,
             )
             self.renko_runtimes.append(runtime)
             sizing_desc = (
@@ -456,6 +456,24 @@ class TradingEngine:
                 await runtime.start()
                 await self._backfill_renko_db_if_needed(runtime)
                 await self._close_orphan_renko_db_trade_if_flat(runtime)
+            halted = [
+                f"{rt.instance_id.upper()}({rt.state.halt_reason})"
+                for rt in self.renko_runtimes
+                if rt.state.orders_halted
+            ]
+            books = ", ".join(
+                f"{rt.instance_id.upper()} pos={rt.state.position} virt=${float(rt.state.sizing_equity or 0):.0f}"
+                for rt in self.renko_runtimes
+            )
+            await self.alert_service.send(
+                severity=AlertSeverity.CRITICAL if halted else AlertSeverity.SUCCESS,
+                event="RENKO_STARTUP",
+                message=(
+                    f"{'🚨' if halted else '✅'} Renko started: {len(self.renko_runtimes)} coins. {books}."
+                    + (f" HALTED: {', '.join(halted)}" if halted else "")
+                ),
+                force=True,
+            )
 
         # 7. Start Scheduler (runs background reconciliation, monitoring, and timer loops)
         await self.scheduler.start()
@@ -539,16 +557,36 @@ class TradingEngine:
                 message=f"🚨 SAFE_HALT: Reconciliation discrepancy detected ({res.details.get('reason', 'Discrepancy')}). Trading halted.",
             )
 
-        # Check for open strategy positions without native SL
+        # Check for open strategy positions without native SL (exchange must still have the leg)
         if self.strategy.current_trade:
+            open_syms = set()
+            if res.details and isinstance(res.details.get("open_leg_symbols"), (list, set, tuple)):
+                open_syms = {str(s) for s in res.details["open_leg_symbols"]}
+            else:
+                try:
+                    ex_pos = await self.delta_adapter.get_positions()
+                    open_syms = {
+                        str(p.symbol)
+                        for p in ex_pos
+                        if abs(float(getattr(p, "size", 0) or 0)) > 1e-9
+                    }
+                except Exception as e:
+                    self.logger.warning(f"Could not list positions for MISSING_BRACKET_SL check: {e}")
+                    open_syms = None
             for leg in (self.strategy.current_trade.ce_leg, self.strategy.current_trade.pe_leg):
-                if leg and leg.status == LegStatus.OPEN and not leg.bracket_order_id and not leg.exchange_sl_active:
-                    await self.alert_service.send(
-                        severity=AlertSeverity.CRITICAL,
-                        event="MISSING_BRACKET_SL",
-                        message=f"🚨 CRITICAL: Strategy leg {leg.symbol} exists without native exchange SL.",
-                        trade_id=self.strategy.current_trade.strategy_trade_id,
+                if not (leg and leg.status == LegStatus.OPEN and not leg.bracket_order_id and not leg.exchange_sl_active):
+                    continue
+                if open_syms is not None and str(leg.symbol) not in open_syms:
+                    self.logger.info(
+                        f"Skipping MISSING_BRACKET_SL for {leg.symbol}: local OPEN but no exchange position."
                     )
+                    continue
+                await self.alert_service.send(
+                    severity=AlertSeverity.CRITICAL,
+                    event="MISSING_BRACKET_SL",
+                    message=f"🚨 CRITICAL: Strategy leg {leg.symbol} exists without native exchange SL.",
+                    trade_id=self.strategy.current_trade.strategy_trade_id,
+                )
 
         self._save_state()
 
@@ -596,6 +634,12 @@ class TradingEngine:
                 self.logger.critical(f"Max daily loss breached (${loss:.2f}). Triggering emergency square-off!")
                 await self.execution_engine.execute_trade_square_off(self.strategy.current_trade, reason="MAX_LOSS")
                 self.risk_manager.activate_kill_switch()
+                await self.alert_service.send(
+                    severity=AlertSeverity.CRITICAL,
+                    event="KILL_SWITCH",
+                    message=f"🚨 Kill switch ON: max daily loss breached (${loss:.2f}).",
+                    force=True,
+                )
 
         # Periodic background reconciliation
         now_ts = asyncio.get_event_loop().time()
@@ -740,6 +784,13 @@ class TradingEngine:
                 await self.execution_engine.execute_trade_square_off(trade, reason="BRACKET_CREATION_FAILED")
                 trade.state = StrategyState.SAFE_HALT
                 self.risk_manager.activate_kill_switch()
+                await self.alert_service.send(
+                    severity=AlertSeverity.CRITICAL,
+                    event="KILL_SWITCH",
+                    message="🚨 Kill switch ON: native bracket SL failed; emergency square-off.",
+                    trade_id=trade.strategy_trade_id,
+                    force=True,
+                )
                 self._save_state(trade)
                 return
 

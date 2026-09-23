@@ -135,6 +135,15 @@ def create_router(engine) -> APIRouter:
     async def activate_kill_switch() -> Dict[str, Any]:
         """Engage emergency kill switch to halt all trading."""
         engine.risk_manager.activate_kill_switch()
+        try:
+            await engine.alert_service.send(
+                severity="CRITICAL",
+                event="KILL_SWITCH",
+                message="🚨 Kill switch ON (API). All new trading halted.",
+                force=True,
+            )
+        except Exception:
+            pass
         return {"status": "KILL_SWITCH_ACTIVATED", "message": "All trading halted."}
 
     # Platform layer (multi-user accounts, strategies, subscriptions)

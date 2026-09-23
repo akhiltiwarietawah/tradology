@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import List, Optional
 from unittest.mock import AsyncMock
+import asyncio
 
 import pytest
 
@@ -456,3 +457,44 @@ async def test_engine_syncs_runtime_kill_switch_on_timer():
     await engine._on_timer_tick(datetime.now(timezone.utc))
     assert engine.renko_runtime.kill_switch is True
     engine.renko_runtime.on_timer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_renko_halt_sends_critical_alert(tmp_path):
+    candles = _trend_candles(n=5, start=1500.0, step=1.0)
+    alerts = []
+
+    async def capture(**kwargs):
+        alerts.append(kwargs)
+        return True
+
+    rt = _runtime(tmp_path, StubExec("halt_alert"), candles, account="halt_alert", alert_sender=capture)
+    rt._halt("unit test halt")
+    await asyncio.sleep(0.05)
+    assert rt.state.orders_halted is True
+    assert alerts
+    assert alerts[0]["event"] == "RENKO_HALT"
+    assert alerts[0]["severity"] == "CRITICAL"
+    assert "unit test halt" in alerts[0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_renko_zero_size_sends_warning_alert(tmp_path):
+    from src.strategies.renko_ichimoku.signals import SignalAction
+    from tests.test_renko_ichimoku import _brick
+
+    candles = _trend_candles(n=5, start=1500.0, step=1.0)
+    alerts = []
+
+    async def capture(**kwargs):
+        alerts.append(kwargs)
+        return True
+
+    rt = _runtime(tmp_path, StubExec("zero"), candles, account="zero", size=0.0, alert_sender=capture)
+    ok = await rt._execute_action(SignalAction("enter_long", "long_entry"), _brick(1, 1600.0, 80))
+    assert ok is True
+    await asyncio.sleep(0.05)
+    no_size = [a for a in alerts if a.get("event") == "RENKO_NO_SIZE"]
+    assert no_size
+    assert no_size[0]["severity"] == "WARNING"
+    assert "0 contracts" in no_size[0]["message"]

@@ -144,3 +144,124 @@ async def test_engine_bracket_creation_failure_triggers_emergency_square_off(tes
     for p in positions:
         assert p.size == 0.0
 
+
+@pytest.mark.asyncio
+async def test_pe_hard_reject_does_not_treat_ce_order_as_pe_fill(mock_exchange):
+    """HTTP 400 insufficient_commission must unwind CE; must not steal CE's filled order as PE."""
+    from src.exchanges.delta.client import DeltaAPIError
+
+    engine = ExecutionEngine(exchange_adapter=mock_exchange)
+    strategy = BTCShortStrangleStrategy(exchange_adapter=mock_exchange)
+    ce_inst = mock_exchange.instruments[1]
+    pe_inst = mock_exchange.instruments[3]
+    trade = strategy.create_trade(95000.0, ce_inst, pe_inst, 100.0, 100.0)
+
+    orig_place = mock_exchange.place_order
+
+    async def place_pe_hard_reject(req):
+        if req.symbol == pe_inst.symbol:
+            raise DeltaAPIError(
+                "Delta API HTTP 400: insufficient_commission",
+                status_code=400,
+                response_data={
+                    "error": {
+                        "code": "insufficient_commission",
+                        "context": {"required_additional_balance": "8.3"},
+                    },
+                    "success": False,
+                },
+            )
+        return await orig_place(req)
+
+    mock_exchange.place_order = place_pe_hard_reject
+
+    async def lookup_returns_ce(_cid):
+        return Order(
+            order_id="stolen-ce",
+            client_order_id="cid_ce",
+            instrument_id=ce_inst.instrument_id,
+            symbol=ce_inst.symbol,
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            quantity=1.0,
+            filled_quantity=1.0,
+            state=OrderState.FILLED,
+            average_fill_price=96.0,
+        )
+
+    mock_exchange.get_order_by_client_id = lookup_returns_ce
+
+    ce_req = OrderRequest(
+        instrument_id=ce_inst.instrument_id,
+        symbol=ce_inst.symbol,
+        side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        quantity=1.0,
+        client_order_id="cid_ce",
+    )
+    pe_req = OrderRequest(
+        instrument_id=pe_inst.instrument_id,
+        symbol=pe_inst.symbol,
+        side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        quantity=1.0,
+        client_order_id="cid_pe",
+    )
+
+    success, ce_ord, pe_ord = await engine.execute_strangle_entry(trade, ce_req, pe_req)
+    assert success is False
+    assert trade.state == StrategyState.FAILED_ENTRY
+    assert trade.ce_leg.status == LegStatus.UNWOUND_ON_FAILURE
+    assert trade.pe_leg.status == LegStatus.CANCELLED
+    assert pe_ord is None
+    buys = [o for o in mock_exchange.placed_orders if o.symbol == ce_inst.symbol and o.side == OrderSide.BUY]
+    assert len(buys) == 1
+
+
+@pytest.mark.asyncio
+async def test_timeout_lookup_ignores_mismatched_cid_fill(mock_exchange):
+    """Timeout recovery must not accept another product's filled order."""
+    engine = ExecutionEngine(exchange_adapter=mock_exchange)
+    strategy = BTCShortStrangleStrategy(exchange_adapter=mock_exchange)
+    ce_inst = mock_exchange.instruments[1]
+    pe_inst = mock_exchange.instruments[3]
+    mock_exchange.fail_specific_symbol = pe_inst.symbol
+    trade = strategy.create_trade(95000.0, ce_inst, pe_inst, 100.0, 100.0)
+
+    async def lookup_wrong_leg(_cid):
+        return Order(
+            order_id="ce-fill",
+            client_order_id="cid_ce",
+            instrument_id=ce_inst.instrument_id,
+            symbol=ce_inst.symbol,
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            quantity=1.0,
+            filled_quantity=1.0,
+            state=OrderState.FILLED,
+            average_fill_price=96.0,
+        )
+
+    mock_exchange.get_order_by_client_id = lookup_wrong_leg
+
+    ce_req = OrderRequest(
+        instrument_id=ce_inst.instrument_id,
+        symbol=ce_inst.symbol,
+        side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        quantity=1.0,
+        client_order_id="cid_ce",
+    )
+    pe_req = OrderRequest(
+        instrument_id=pe_inst.instrument_id,
+        symbol=pe_inst.symbol,
+        side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        quantity=1.0,
+        client_order_id="cid_pe",
+    )
+    success, _, _ = await engine.execute_strangle_entry(trade, ce_req, pe_req)
+    assert success is False
+    assert trade.state == StrategyState.FAILED_ENTRY
+    assert trade.pe_leg.status == LegStatus.CANCELLED
+
