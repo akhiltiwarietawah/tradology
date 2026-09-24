@@ -160,6 +160,19 @@ def test_renko_default_sizing_base_is_50():
     assert cfg.sizing_base_usd == 50.0
 
 
+def test_renko_instance_configs_groups_b_and_zec():
+    s = _settings(
+        renko_ichimoku_alts_group_b_enabled="sui,near",
+        renko_ichimoku_zec_enabled=True,
+    )
+    configs = s.renko_instance_configs()
+    ids = {c.instance_id for c in configs}
+    assert ids == {"sui", "near", "zec"}
+    zec = next(c for c in configs if c.instance_id == "zec")
+    assert zec.strategy_code == "renko_ichimoku_zec"
+    assert abs(zec.box_size - 0.2743) < 1e-6
+
+
 def test_renko_instance_configs_registry_alts_and_margin_split():
     s = _settings(
         renko_ichimoku_strategy_enabled=True,

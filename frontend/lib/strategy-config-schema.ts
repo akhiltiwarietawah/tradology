@@ -1,6 +1,9 @@
 /** Strategy-specific subscription configuration schemas (backend-supported fields only). */
 
-import { RENKO_ALT_SLUGS, renkoStrategyCode } from "@/lib/renko-assets";
+import {
+  RENKO_ALL_ALT_SLUGS,
+  renkoStrategyCode,
+} from "@/lib/renko-assets";
 
 export type ConfigFieldType = "number" | "select" | "text";
 
@@ -187,7 +190,7 @@ function renkoSubscriptionSchema(strategyCode: string, defaultContracts = 0): St
   };
 }
 
-for (const slug of RENKO_ALT_SLUGS) {
+for (const slug of RENKO_ALL_ALT_SLUGS) {
   const code = renkoStrategyCode(slug);
   SCHEMAS[code] = renkoSubscriptionSchema(code, 0);
 }

@@ -291,10 +291,19 @@ class Settings(BaseSettings):
     )
     renko_ichimoku_alts_enabled: str = Field(
         default="",
-        description=(
-            "Comma-separated extra Renko instances from the asset registry: "
-            "btc,bnb,doge,ada,trx,avax,link,hype. Each gets its own state file and strategy code."
-        ),
+        description="Group A alts (8): btc,bnb,doge,ada,trx,avax,link,hype — see docs/RENKO_ASSET_GROUPS.md",
+    )
+    renko_ichimoku_alts_group_b_enabled: str = Field(
+        default="",
+        description="Group B: sui,inj,near,apt,pepe,wif,ena,jup",
+    )
+    renko_ichimoku_alts_group_c_enabled: str = Field(
+        default="",
+        description="Group C: ton,dot,atom,ltc,bch,uni,aave,pol,sei,tia,op,arb,paxg",
+    )
+    renko_ichimoku_zec_enabled: bool = Field(
+        default=False,
+        description="Enable ZEC separately (backtest watchlist; not in groups A/B/C). Confirm Delta symbol.",
     )
     renko_ichimoku_split_margin_across_book: bool = Field(
         default=False,
@@ -406,13 +415,18 @@ class Settings(BaseSettings):
         return self.active_api_key, self.active_api_secret
 
     def has_any_renko_enabled(self) -> bool:
-        from src.strategies.renko_ichimoku.asset_registry import parse_enabled_alt_ids
+        from src.strategies.renko_ichimoku.asset_registry import merge_enabled_alt_ids
 
         return bool(
             self.renko_ichimoku_strategy_enabled
             or self.renko_ichimoku_sol_enabled
             or self.renko_ichimoku_xrp_enabled
-            or parse_enabled_alt_ids(self.renko_ichimoku_alts_enabled)
+            or merge_enabled_alt_ids(
+                self.renko_ichimoku_alts_enabled,
+                self.renko_ichimoku_alts_group_b_enabled,
+                self.renko_ichimoku_alts_group_c_enabled,
+                zec_enabled=self.renko_ichimoku_zec_enabled,
+            )
         )
 
     def _renko_env_float(self, env_key: str, default: float) -> float:
@@ -487,7 +501,10 @@ class Settings(BaseSettings):
         """Build enabled Renko instances (ETH / SOL / XRP + registry alts)."""
         from dataclasses import replace
 
-        from src.strategies.renko_ichimoku.asset_registry import RENKO_ALT_REGISTRY, parse_enabled_alt_ids
+        from src.strategies.renko_ichimoku.asset_registry import (
+            RENKO_ALT_REGISTRY,
+            merge_enabled_alt_ids,
+        )
         from src.strategies.renko_ichimoku.instance_config import (
             RENKO_ETH_STRATEGY_CODE,
             RENKO_SOL_STRATEGY_CODE,
@@ -548,7 +565,13 @@ class Settings(BaseSettings):
                     **sizing_common("xrp"),
                 )
             )
-        for alt_id in parse_enabled_alt_ids(self.renko_ichimoku_alts_enabled):
+        enabled_alts = merge_enabled_alt_ids(
+            self.renko_ichimoku_alts_enabled,
+            self.renko_ichimoku_alts_group_b_enabled,
+            self.renko_ichimoku_alts_group_c_enabled,
+            zec_enabled=self.renko_ichimoku_zec_enabled,
+        )
+        for alt_id in enabled_alts:
             spec = RENKO_ALT_REGISTRY[alt_id]
             prefix = alt_id.upper()
             symbol = self._renko_env_str(f"RENKO_ICHIMOKU_{prefix}_SYMBOL", spec.default_symbol)

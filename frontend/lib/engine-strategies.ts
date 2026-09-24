@@ -1,6 +1,9 @@
 import {
-  RENKO_ALT_SLUGS,
   RENKO_CORE_SLUGS,
+  RENKO_GROUP_A_ALT_SLUGS,
+  RENKO_GROUP_B_SLUGS,
+  RENKO_GROUP_C_SLUGS,
+  RENKO_ZEC_SLUGS,
   renkoStrategyCode,
   type RenkoSlug,
 } from "@/lib/renko-assets";
@@ -32,6 +35,28 @@ const RENKO_LABELS: Record<RenkoSlug, string> = {
   avax: "AVAX",
   link: "LINK",
   hype: "HYPE",
+  sui: "SUI",
+  inj: "INJ",
+  near: "NEAR",
+  apt: "APT",
+  pepe: "PEPE",
+  wif: "WIF",
+  ena: "ENA",
+  jup: "JUP",
+  ton: "TON",
+  dot: "DOT",
+  atom: "ATOM",
+  ltc: "LTC",
+  bch: "BCH",
+  uni: "UNI",
+  aave: "AAVE",
+  pol: "POL",
+  sei: "SEI",
+  tia: "TIA",
+  op: "OP",
+  arb: "ARB",
+  paxg: "PAXG",
+  zec: "ZEC",
 };
 
 function renkoDef(slug: RenkoSlug): EngineStrategyDef {
@@ -49,7 +74,10 @@ function renkoDef(slug: RenkoSlug): EngineStrategyDef {
 
 export const ENGINE_STRATEGIES: EngineStrategyDef[] = [
   ...RENKO_CORE_SLUGS.map(renkoDef),
-  ...RENKO_ALT_SLUGS.map(renkoDef),
+  ...RENKO_GROUP_A_ALT_SLUGS.map(renkoDef),
+  ...RENKO_GROUP_B_SLUGS.map(renkoDef),
+  ...RENKO_GROUP_C_SLUGS.map(renkoDef),
+  ...RENKO_ZEC_SLUGS.map(renkoDef),
   {
     slug: "strangle",
     label: "BTC Strangle",
