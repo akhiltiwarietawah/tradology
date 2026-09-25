@@ -173,7 +173,10 @@ class TradingEngine:
         """Wire isolated Renko runtimes (ETH, SOL, …). Never reuses strangle OrderManager or state files."""
         from collections import defaultdict
 
+        from src.strategies.renko_ichimoku.delta_bridge import CandleFetchCache
+
         instances = self.settings.renko_instance_configs()
+        candle_cache = CandleFetchCache()
         if not instances:
             return
         separate = self.settings.uses_separate_renko_account()
@@ -241,7 +244,11 @@ class TradingEngine:
                 entry_timeout_seconds=self.settings.two_leg_entry_timeout_seconds,
                 logger=PrefixLogger(self.logger, f"RENKO_{group_id}"),
             )
-            bridge = DeltaCandleProductBridge(adapter, PrefixLogger(self.logger, f"RENKO_{group_id}"))
+            bridge = DeltaCandleProductBridge(
+                adapter,
+                PrefixLogger(self.logger, f"RENKO_{group_id}"),
+                cache=candle_cache,
+            )
             if self.renko_order_manager is None:
                 self.renko_order_manager = order_manager
                 self.renko_execution = execution
@@ -1194,6 +1201,7 @@ class TradingEngine:
                 open_trade = await self.renko_trade_repo.get_open_trade(
                     symbol=runtime.symbol,
                     strategy_name=runtime.strategy_code,
+                    instance_id=runtime.instance_id,
                 )
                 if open_trade:
                     if not st.active_trade_id:
@@ -1236,7 +1244,7 @@ class TradingEngine:
                     brick=synth_brick,
                     action_kind=action_kind,
                     action_reason="startup_backfill",
-                    account_name=self.settings.renko_ichimoku_account,
+                    account_name=runtime.account_name,
                     symbol=runtime.symbol,
                     product_id=str(runtime.instrument_id),
                     quantity=float(st.open_quantity or runtime._expected_open_quantity() or runtime.position_size),
@@ -1271,6 +1279,7 @@ class TradingEngine:
                 open_trade = await self.renko_trade_repo.get_open_trade(
                     symbol=runtime.symbol,
                     strategy_name=runtime.strategy_code,
+                    instance_id=runtime.instance_id,
                 )
                 if not open_trade:
                     return

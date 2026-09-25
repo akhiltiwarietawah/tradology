@@ -257,6 +257,7 @@ class RenkoTradeRepository:
         self,
         symbol: Optional[str] = None,
         strategy_name: Optional[str] = None,
+        instance_id: Optional[str] = None,
     ) -> Optional[TradeModel]:
         async with self.db.get_session() as session:
             names = [strategy_name] if strategy_name else list(RENKO_STRATEGY_CODES)
@@ -272,9 +273,24 @@ class RenkoTradeRepository:
                 stmt = stmt.join(TradeLegModel, TradeLegModel.trade_id == TradeModel.trade_id).where(
                     TradeLegModel.symbol == symbol
                 )
-            stmt = stmt.limit(1)
+            stmt = stmt.limit(1 if not instance_id else 20)
             res = await session.execute(stmt)
-            return res.scalar_one_or_none()
+            if not instance_id:
+                return res.scalar_one_or_none()
+            rows = list(res.scalars().all())
+        matched = [
+            row
+            for row in rows
+            if str((row.strategy_config or {}).get("instance_id") or "") == instance_id
+        ]
+        if matched:
+            return matched[0]
+        # Older rows have no instance_id. Use one only for the original coin book.
+        if len(rows) == 1 and "_" not in instance_id:
+            tagged = str((rows[0].strategy_config or {}).get("instance_id") or "")
+            if not tagged or tagged == instance_id:
+                return rows[0]
+        return None
 
     async def get_trade(self, trade_id: str) -> Optional[TradeModel]:
         async with self.db.get_session() as session:

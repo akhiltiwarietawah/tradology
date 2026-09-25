@@ -168,6 +168,9 @@ class DeltaExchangeAdapter(BaseExchangeAdapter):
             start_time_us=start_time_us,
         )
 
+    async def set_leverage(self, product_id: int, leverage: float) -> None:
+        await self.rest_client.set_position_leverage(int(product_id), float(leverage))
+
     async def place_order(self, order_request: OrderRequest) -> Order:
         product_id = int(order_request.instrument_id)
         side = "buy" if order_request.side == OrderSide.BUY else "sell"

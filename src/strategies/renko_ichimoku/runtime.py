@@ -248,6 +248,27 @@ class RenkoIchimokuRuntime:
             self.logger.warning(f"Could not fetch account balance for sizing: {e}")
         return 0.0
 
+    async def _ensure_exchange_leverage(self) -> None:
+        """Push configured leverage to Delta when this book is flat. Does not change signal rules."""
+        if self.dry_run or not self.exchange_ops or not self.instrument_id:
+            return
+        if int(self.state.position or 0) != 0:
+            self.logger.info(
+                f"Leave Delta leverage unchanged: {self.symbol} already has a position."
+            )
+            return
+        setter = getattr(self.exchange_ops, "set_leverage", None)
+        if setter is None:
+            return
+        try:
+            await setter(int(self.instrument_id), self.leverage)
+            self.logger.info(f"Set Delta leverage to {self.leverage:.0f}x for {self.symbol}.")
+        except Exception as e:
+            self.logger.warning(
+                f"Could not set Delta leverage to {self.leverage:.0f}x for {self.symbol} "
+                f"(trading continues; set it on Delta if this repeats): {type(e).__name__}: {e}"
+            )
+
     async def _sync_sizing_equity_from_account(self) -> None:
         """Initialize virtual sizing equity from SIZING_BASE_USD when not already in state."""
         if not self.is_dynamic_sizing:
@@ -505,6 +526,7 @@ class RenkoIchimokuRuntime:
             return
 
         await self._reconcile_exchange_position()
+        await self._ensure_exchange_leverage()
         self._started = True
         if not self.state.orders_halted:
             self._trading_unlocked = True

@@ -18,6 +18,7 @@ from src.config.constants import (
     PATH_ORDERS_HISTORY,
     PATH_ORDERS_BRACKET,
     PATH_POSITIONS,
+    PATH_POSITIONS_LEVERAGE,
     PATH_POSITIONS_MARGINED,
     PATH_FILLS,
     PATH_WALLET_BALANCES,
@@ -225,6 +226,16 @@ class DeltaRestClient:
             self.logger.error(f"Failed to get spot price fallback: {e}")
 
         raise DeltaAPIError(f"Unable to retrieve spot/index price for {symbol}")
+
+    async def set_position_leverage(self, product_id: int, leverage: float) -> Dict[str, Any]:
+        """Set the product leverage on this Delta account. Caller must only do this when flat."""
+        lev = float(leverage)
+        payload = {
+            "product_id": int(product_id),
+            "leverage": str(int(lev)) if lev.is_integer() else str(lev),
+        }
+        res = await self.request("POST", PATH_POSITIONS_LEVERAGE, data=payload, auth_required=True)
+        return res.get("result", {}) if isinstance(res, dict) else {}
 
     async def get_positions(self, product_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """Fetch open positions from exchange."""

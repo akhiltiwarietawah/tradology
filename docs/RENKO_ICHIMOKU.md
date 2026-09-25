@@ -70,18 +70,28 @@ Each enabled coin is already **independent**:
 
 You do **not** need `RENKO_ICHIMOKU_SPLIT_MARGIN_ACROSS_BOOK` when each coin trades on **its own Delta account** (recommended for many alts). Use split margin only if several coins share **one** wallet and you want to divide `MARGIN_PCT` by instance count.
 
-### Separate Delta accounts per coin (one engine)
+### Wallets once, coins by name
 
-Optional per-instance credentials (fallback: global `RENKO_ICHIMOKU_API_*` or `DELTA_LIVE_*`):
+API keys live on the wallet, not on each coin. Two wallets already exist:
 
-| Variable | Example |
-|---|---|
-| `RENKO_ICHIMOKU_ETH_ACCOUNT` | `renko_eth` (platform label) |
-| `RENKO_ICHIMOKU_ETH_API_KEY` / `_API_SECRET` | Delta keys for the ETH wallet |
-| `RENKO_ICHIMOKU_SOL_API_KEY` / … | SOL wallet |
-| `RENKO_ICHIMOKU_BTC_API_KEY` / … | registry alts use the same pattern |
+- `RENKO_ICHIMOKU_ACCOUNT` uses `RENKO_ICHIMOKU_API_KEY` / `RENKO_ICHIMOKU_API_SECRET` (or the primary Delta keys when that wallet is shared)
+- `EXISTING_STRATEGY_ACCOUNT` uses `EXISTING_STRATEGY_API_KEY` / `EXISTING_STRATEGY_API_SECRET`, or `DELTA_LIVE_*` when those are empty
 
-The engine groups instances by API key and opens one Delta adapter per wallet. Balance for sizing is read from **that** account only.
+A third wallet is one pair: `RENKO_WALLET_<LABEL>_API_KEY` and `RENKO_WALLET_<LABEL>_API_SECRET`.
+
+Assign many coins in one line. Coins left out stay on `RENKO_ICHIMOKU_ACCOUNT`.
+
+```
+RENKO_COIN_ACCOUNTS=sui:strangle,xrp:strangle,btc:renko
+```
+
+A second book of the same coin on a wallet that already has keys:
+
+```
+RENKO_ACCOUNT_BOOKS=xrp:strangle
+```
+
+Per-coin `RENKO_ICHIMOKU_<COIN>_API_KEY` still overrides that wallet. The engine groups instances by API key and opens one Delta adapter per wallet. Balance for sizing is read from **that** account only.
 
 ### One wallet, many coins
 

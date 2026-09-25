@@ -194,6 +194,22 @@ class Settings(BaseSettings):
         default="",
         description="Optional API secret for the Renko account when it differs from the existing strategy account.",
     )
+    renko_account_books: str = Field(
+        default="",
+        description=(
+            "Extra isolated copies of an already-enabled Renko coin on another saved wallet. "
+            "Format coin:wallet:sizing_base, e.g. xrp:prop:400. Box size and signals stay with the coin. "
+            "Keys come from that wallet. Empty leaves books unchanged."
+        ),
+    )
+    renko_coin_accounts: str = Field(
+        default="",
+        description=(
+            "Assign Renko coins to a wallet that already has keys. "
+            "Format coin:wallet, e.g. sui:strangle,xrp:strangle. "
+            "Coins omitted here use RENKO_ICHIMOKU_ACCOUNT. No per-coin API keys."
+        ),
+    )
     renko_ichimoku_symbol: str = Field(
         default="ETHUSDT",
         description="Delta perpetual symbol for the ETH Renko instance (ETHUSDT / ETHUSD).",
@@ -449,20 +465,45 @@ class Settings(BaseSettings):
             self.renko_ichimoku_sizing_base_usd,
         )
 
+    def _account_label_for_instance(self, instance_id: str) -> str:
+        """Wallet label for one coin. Per-coin env overrides the shared map."""
+        from src.strategies.renko_ichimoku.instance_config import parse_coin_accounts
+
+        prefix = instance_id.upper()
+        explicit = os.getenv(f"RENKO_ICHIMOKU_{prefix}_ACCOUNT")
+        if explicit and str(explicit).strip():
+            return str(explicit).strip()
+        mapped = parse_coin_accounts(self.renko_coin_accounts).get(instance_id.lower())
+        if mapped:
+            return mapped
+        return self.renko_ichimoku_account
+
+    def _credentials_for_wallet(self, account_label: str) -> tuple[str, str]:
+        """Keys for a named wallet. Secrets live once per wallet, not once per coin."""
+        label = (account_label or "").strip().lower()
+        if label == self.renko_ichimoku_account.strip().lower():
+            return self.renko_api_credentials()
+        if label == self.existing_strategy_account.strip().lower():
+            return self.existing_strategy_api_credentials()
+        env_label = "".join(ch for ch in label if ch.isalnum()).upper()
+        if not env_label:
+            return "", ""
+        key = os.getenv(f"RENKO_WALLET_{env_label}_API_KEY")
+        secret = os.getenv(f"RENKO_WALLET_{env_label}_API_SECRET")
+        if key and secret and str(key).strip() and str(secret).strip():
+            return str(key).strip(), str(secret).strip()
+        return "", ""
+
     def _renko_credentials_for_instance(self, instance_id: str) -> tuple[str, str, str]:
         """Return (account_label, api_key, api_secret) for one Renko instance."""
         prefix = instance_id.upper()
-        account = self._renko_env_str(f"RENKO_ICHIMOKU_{prefix}_ACCOUNT", self.renko_ichimoku_account)
+        account = self._account_label_for_instance(instance_id)
         inst_key = os.getenv(f"RENKO_ICHIMOKU_{prefix}_API_KEY")
         inst_secret = os.getenv(f"RENKO_ICHIMOKU_{prefix}_API_SECRET")
         if inst_key and inst_secret and str(inst_key).strip() and str(inst_secret).strip():
             return account, str(inst_key).strip(), str(inst_secret).strip()
-        default_key, default_secret = self.renko_api_credentials()
-        if default_key and default_secret:
-            return account, default_key, default_secret
-        if self.renko_uses_shared_primary_adapter():
-            return account, self.active_api_key, self.active_api_secret
-        return account, "", ""
+        key, secret = self._credentials_for_wallet(account)
+        return account, key, secret
 
     def _renko_state_path(self, instance_id: str) -> str:
         env_suffix = "live" if self.delta_env == Environment.LIVE else "testnet"
@@ -623,7 +664,81 @@ class Settings(BaseSettings):
             div = max(1, len(configs))
             scaled_margin = float(self.renko_ichimoku_margin_pct) / div
             configs = [replace(c, margin_pct=scaled_margin) for c in configs]
-        return configs
+        return self._append_renko_account_books(configs)
+
+    def _renko_book_credentials(self, instance_id: str) -> Optional[tuple[str, str, str]]:
+        """Explicit keys only. Never fall back onto the primary Renko wallet."""
+        prefix = instance_id.upper()
+        key = os.getenv(f"RENKO_ICHIMOKU_{prefix}_API_KEY")
+        secret = os.getenv(f"RENKO_ICHIMOKU_{prefix}_API_SECRET")
+        if not key or not secret or not str(key).strip() or not str(secret).strip():
+            return None
+        account = self._renko_env_str(f"RENKO_ICHIMOKU_{prefix}_ACCOUNT", instance_id)
+        return account, str(key).strip(), str(secret).strip()
+
+    def _append_renko_account_books(self, configs: List["RenkoInstanceConfig"]) -> List["RenkoInstanceConfig"]:
+        """Clone an enabled coin onto another account. Strategy parameters stay on the base book."""
+        import logging
+        from dataclasses import replace
+
+        from src.strategies.renko_ichimoku.instance_config import book_instance_id, parse_account_books
+
+        books = parse_account_books(self.renko_account_books)
+        if not books:
+            return configs
+        log = logging.getLogger("settings")
+        by_id = {c.instance_id: c for c in configs}
+        taken = set(by_id)
+        out = list(configs)
+        for base_id, account_slug, sizing_base in books:
+            base = by_id.get(base_id)
+            if base is None:
+                log.warning(
+                    "RENKO_ACCOUNT_BOOKS skipped %s:%s — that coin is not enabled",
+                    base_id,
+                    account_slug,
+                )
+                continue
+            new_id = book_instance_id(base_id, account_slug, taken)
+            account_label = self._renko_env_str(
+                f"RENKO_ICHIMOKU_{new_id.upper()}_ACCOUNT",
+                account_slug,
+            )
+            creds = self._renko_book_credentials(new_id)
+            if creds is None:
+                key, secret = self._credentials_for_wallet(account_label)
+                if not key or not secret:
+                    log.warning(
+                        "RENKO_ACCOUNT_BOOKS skipped %s:%s — wallet '%s' has no keys",
+                        base_id,
+                        account_slug,
+                        account_label,
+                    )
+                    continue
+                account = account_label
+            else:
+                account, key, secret = creds
+            if any(c.symbol == base.symbol and c.api_key == key for c in out):
+                log.warning(
+                    "RENKO_ACCOUNT_BOOKS skipped %s:%s — %s is already on that wallet",
+                    base_id,
+                    account_slug,
+                    base.symbol,
+                )
+                continue
+            taken.add(new_id)
+            out.append(
+                replace(
+                    base,
+                    instance_id=new_id,
+                    state_file=self._renko_state_path(new_id),
+                    account_name=account,
+                    api_key=key,
+                    api_secret=secret,
+                    sizing_base_usd=float(sizing_base) if sizing_base is not None else base.sizing_base_usd,
+                )
+            )
+        return out
 
     def get_parsed_entry_time(self) -> time:
         return datetime.strptime(self.entry_time_ist, "%H:%M:%S").time()

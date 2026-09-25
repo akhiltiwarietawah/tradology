@@ -127,6 +127,150 @@ def test_engine_keeps_short_strangle_when_renko_disabled():
     assert engine.strategy.config.quantity == 1.0
 
 
+def test_account_book_copies_same_strategy_onto_another_wallet(monkeypatch):
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP_DESK2_API_KEY", "desk-key")
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP_DESK2_API_SECRET", "desk-secret")
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP_DESK2_ACCOUNT", "desk2")
+    s = _settings(
+        renko_ichimoku_xrp_enabled=True,
+        renko_ichimoku_xrp_box_size=0.003,
+        renko_ichimoku_xrp_position_size=100,
+        renko_ichimoku_api_key="primary-key",
+        renko_ichimoku_api_secret="primary-secret",
+        renko_ichimoku_account="renko",
+        existing_strategy_account="renko",
+        renko_account_books="xrp:desk2",
+    )
+    configs = s.renko_instance_configs()
+    assert [c.instance_id for c in configs] == ["xrp", "xrp_desk2"]
+    base, extra = configs
+    assert extra.strategy_code == base.strategy_code == "renko_ichimoku_xrp"
+    assert extra.symbol == base.symbol
+    assert extra.box_size == base.box_size == 0.003
+    assert extra.position_size == base.position_size == 100
+    assert extra.margin_pct == base.margin_pct
+    assert extra.state_file != base.state_file
+    assert extra.api_key == "desk-key"
+    assert extra.account_name == "desk2"
+    assert extra.instance_id.upper()[:4] != base.instance_id.upper()[:4]
+
+
+def test_coin_uses_named_wallet_without_its_own_keys():
+    engine = TradingEngine(
+        settings=_settings(
+            existing_strategy_enabled=False,
+            renko_ichimoku_strategy_enabled=True,
+            renko_ichimoku_alts_group_b_enabled="sui",
+            existing_strategy_account="strangle",
+            existing_strategy_api_key="strangle-key",
+            existing_strategy_api_secret="strangle-secret",
+            renko_ichimoku_account="renko",
+            renko_ichimoku_api_key="renko-key",
+            renko_ichimoku_api_secret="renko-secret",
+            renko_coin_accounts="sui:strangle",
+        )
+    )
+    by_id = {rt.instance_id: rt for rt in engine.renko_runtimes}
+    assert by_id["eth"].account_name == "renko"
+    assert by_id["eth"].exchange_ops.rest_client.api_key == "renko-key"
+    assert by_id["sui"].account_name == "strangle"
+    assert by_id["sui"].exchange_ops.rest_client.api_key == "strangle-key"
+    assert by_id["sui"].box_size != 0
+    assert by_id["eth"].exchange_ops is not by_id["sui"].exchange_ops
+
+
+def test_second_book_uses_existing_wallet_keys():
+    s = _settings(
+        renko_ichimoku_xrp_enabled=True,
+        renko_ichimoku_xrp_box_size=0.003,
+        renko_ichimoku_xrp_position_size=100,
+        existing_strategy_account="strangle",
+        existing_strategy_api_key="strangle-key",
+        existing_strategy_api_secret="strangle-secret",
+        renko_ichimoku_account="renko",
+        renko_ichimoku_api_key="renko-key",
+        renko_ichimoku_api_secret="renko-secret",
+        renko_account_books="xrp:strangle",
+    )
+    configs = s.renko_instance_configs()
+    assert [c.instance_id for c in configs] == ["xrp", "xrp_strangle"]
+    base, extra = configs
+    assert extra.strategy_code == base.strategy_code
+    assert extra.box_size == base.box_size == 0.003
+    assert extra.position_size == base.position_size == 100
+    assert extra.api_key == "strangle-key"
+    assert base.api_key == "renko-key"
+    assert extra.account_name == "strangle"
+
+
+def test_extra_book_keeps_coin_box_and_uses_own_sizing(monkeypatch):
+    monkeypatch.setenv("RENKO_WALLET_PROP_API_KEY", "prop-key")
+    monkeypatch.setenv("RENKO_WALLET_PROP_API_SECRET", "prop-secret")
+    s = _settings(
+        renko_ichimoku_xrp_enabled=True,
+        renko_ichimoku_xrp_box_size=0.003,
+        renko_ichimoku_xrp_position_size=100,
+        renko_ichimoku_sizing_base_usd=200,
+        renko_ichimoku_account="renko",
+        renko_ichimoku_api_key="renko-key",
+        renko_ichimoku_api_secret="renko-secret",
+        existing_strategy_account="strangle",
+        renko_account_books="xrp:prop:400",
+    )
+    configs = s.renko_instance_configs()
+    assert [c.instance_id for c in configs] == ["xrp", "xrp_prop"]
+    base, extra = configs
+    assert extra.strategy_code == base.strategy_code == "renko_ichimoku_xrp"
+    assert extra.box_size == base.box_size == 0.003
+    assert extra.symbol == base.symbol
+    assert base.sizing_base_usd == 200
+    assert extra.sizing_base_usd == 400
+    assert extra.api_key == "prop-key"
+    assert extra.state_file != base.state_file
+
+
+def test_extra_book_does_not_duplicate_xrp2_on_same_wallet(monkeypatch):
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP2_ENABLED", "true")
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP2_ACCOUNT", "strangle")
+    monkeypatch.setenv("RENKO_WALLET_PROP_API_KEY", "prop-key")
+    monkeypatch.setenv("RENKO_WALLET_PROP_API_SECRET", "prop-secret")
+    s = _settings(
+        renko_ichimoku_xrp_enabled=True,
+        renko_ichimoku_xrp_box_size=0.003,
+        renko_ichimoku_account="renko",
+        renko_ichimoku_api_key="renko-key",
+        renko_ichimoku_api_secret="renko-secret",
+        existing_strategy_account="strangle",
+        existing_strategy_api_key="strangle-key",
+        existing_strategy_api_secret="strangle-secret",
+        renko_account_books="xrp:strangle:400,xrp:prop:250",
+    )
+    configs = s.renko_instance_configs()
+    ids = [c.instance_id for c in configs]
+    assert "xrp2" in ids
+    assert "xrp_strangle" not in ids
+    extra = next(c for c in configs if c.instance_id == "xrp_prop")
+    xrp2 = next(c for c in configs if c.instance_id == "xrp2")
+    assert xrp2.strategy_code == "renko_ichimoku_xrp2"
+    assert xrp2.api_key == "strangle-key"
+    assert extra.box_size == 0.003
+    assert extra.sizing_base_usd == 250
+    assert extra.api_key == "prop-key"
+
+
+def test_account_book_without_its_own_keys_is_not_started(monkeypatch):
+    monkeypatch.delenv("RENKO_ICHIMOKU_XRP_DESK2_API_KEY", raising=False)
+    monkeypatch.delenv("RENKO_ICHIMOKU_XRP_DESK2_API_SECRET", raising=False)
+    s = _settings(
+        renko_ichimoku_xrp_enabled=True,
+        renko_ichimoku_xrp_box_size=0.003,
+        renko_account_books="xrp:desk2",
+    )
+    configs = s.renko_instance_configs()
+    assert [c.instance_id for c in configs] == ["xrp"]
+    assert configs[0].box_size == 0.003
+
+
 def test_renko_instance_configs_eth_sol_and_xrp():
     s = _settings(
         renko_ichimoku_strategy_enabled=True,
@@ -213,6 +357,47 @@ def test_engine_starts_eth_sol_and_xrp_runtimes():
     assert engine.renko_runtimes[1].box_size == 0.42
     assert engine.renko_runtimes[2].instance_id == "xrp"
     assert engine.renko_runtimes[2].box_size == 0.003
+
+
+def test_same_symbol_candles_are_fetched_once_per_tick():
+    import asyncio
+    from src.strategies.renko_ichimoku.delta_bridge import CandleFetchCache, DeltaCandleProductBridge
+
+    class Adapter:
+        def __init__(self):
+            self.calls = 0
+
+        async def get_candles(self, symbol, resolution, limit):
+            self.calls += 1
+            return [{"time": 1_700_000_000, "close": 1.0}]
+
+    cache = CandleFetchCache()
+    adapter = Adapter()
+    first = DeltaCandleProductBridge(adapter, None, cache=cache)
+    second = DeltaCandleProductBridge(adapter, None, cache=cache)
+    asyncio.run(first.fetch_closed_candles("XRPUSD", "15m", 50))
+    asyncio.run(second.fetch_closed_candles("XRPUSD", "15m", 50))
+    assert adapter.calls == 1
+
+
+def test_set_position_leverage_posts_product_leverage():
+    import asyncio
+    from src.exchanges.delta.client import DeltaRestClient
+
+    client = DeltaRestClient("https://example.invalid", "k", "s")
+    seen = {}
+
+    async def fake_request(method, path, params=None, data=None, auth_required=True):
+        seen["method"] = method
+        seen["path"] = path
+        seen["data"] = data
+        return {"result": {"leverage": "10"}}
+
+    client.request = fake_request
+    asyncio.run(client.set_position_leverage(99, 10))
+    assert seen["method"] == "POST"
+    assert seen["path"] == "/v2/positions/leverage"
+    assert seen["data"] == {"product_id": 99, "leverage": "10"}
 
 
 def test_deterministic_order_ids_include_instance_prefix():
