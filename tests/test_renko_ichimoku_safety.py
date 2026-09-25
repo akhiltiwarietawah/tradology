@@ -498,3 +498,5 @@ async def test_renko_zero_size_sends_warning_alert(tmp_path):
     assert no_size
     assert no_size[0]["severity"] == "WARNING"
     assert "0 contracts" in no_size[0]["message"]
+    assert rt._skip_entries_after_no_size is True
+    assert no_size[0].get("force") is False

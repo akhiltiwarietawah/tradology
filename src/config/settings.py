@@ -421,6 +421,7 @@ class Settings(BaseSettings):
             self.renko_ichimoku_strategy_enabled
             or self.renko_ichimoku_sol_enabled
             or self.renko_ichimoku_xrp_enabled
+            or os.getenv("RENKO_ICHIMOKU_XRP2_ENABLED", "").strip().lower() in ("1", "true", "yes")
             or merge_enabled_alt_ids(
                 self.renko_ichimoku_alts_enabled,
                 self.renko_ichimoku_alts_group_b_enabled,
@@ -509,6 +510,7 @@ class Settings(BaseSettings):
             RENKO_ETH_STRATEGY_CODE,
             RENKO_SOL_STRATEGY_CODE,
             RENKO_XRP_STRATEGY_CODE,
+            RENKO_XRP2_STRATEGY_CODE,
             RenkoInstanceConfig,
         )
 
@@ -563,6 +565,25 @@ class Settings(BaseSettings):
                     candle_resolution=self.renko_ichimoku_candle_resolution,
                     flatten=self.renko_ichimoku_xrp_flatten,
                     **sizing_common("xrp"),
+                )
+            )
+        xrp2_on = os.getenv("RENKO_ICHIMOKU_XRP2_ENABLED", "").strip().lower() in ("1", "true", "yes")
+        if xrp2_on:
+            configs.append(
+                RenkoInstanceConfig(
+                    instance_id="xrp2",
+                    strategy_code=RENKO_XRP2_STRATEGY_CODE,
+                    symbol=self._renko_env_str("RENKO_ICHIMOKU_XRP2_SYMBOL", self.renko_ichimoku_xrp_symbol),
+                    box_size=self._renko_env_float(
+                        "RENKO_ICHIMOKU_XRP2_BOX_SIZE",
+                        self.renko_ichimoku_xrp_box_size,
+                    ),
+                    position_size=self._renko_env_float("RENKO_ICHIMOKU_XRP2_POSITION_SIZE", 0.0),
+                    state_file=self._renko_state_path("xrp2"),
+                    candle_resolution=self.renko_ichimoku_candle_resolution,
+                    flatten=os.getenv("RENKO_ICHIMOKU_XRP2_FLATTEN", "").strip().lower()
+                    in ("1", "true", "yes"),
+                    **sizing_common("xrp2"),
                 )
             )
         enabled_alts = merge_enabled_alt_ids(

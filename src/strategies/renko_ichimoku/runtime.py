@@ -205,6 +205,7 @@ class RenkoIchimokuRuntime:
         self._halt_alert_sent = False
         self._last_position_reconcile_ts = 0.0
         self._pending_order_quantity: float = 0.0
+        self._skip_entries_after_no_size = False
 
         self.store = RenkoIchimokuStateStore(state_file, self.logger)
         self.state = self.store.load()
@@ -579,6 +580,8 @@ class RenkoIchimokuRuntime:
         )
 
     async def _process_closed_candles(self, candles: List[ClosedCandle], trade: bool) -> None:
+        if trade:
+            self._skip_entries_after_no_size = False
         for candle in candles:
             if self.state.orders_halted and trade:
                 return
@@ -588,6 +591,8 @@ class RenkoIchimokuRuntime:
             for brick in new_bricks:
                 snap = self.ichimoku.update(brick)
                 if trade and self._trading_unlocked and not self.state.orders_halted:
+                    if self._skip_entries_after_no_size:
+                        continue
                     await self._on_confirmed_brick(brick, snap)
                     if self.state.orders_halted:
                         return
@@ -622,11 +627,13 @@ class RenkoIchimokuRuntime:
             return True
         order_qty = await self._quantity_for_action(action.kind, brick)
         if order_qty <= 0:
+            if str(action.kind).startswith("enter"):
+                self._skip_entries_after_no_size = True
             if self.is_dynamic_sizing:
                 self.logger.warning(
                     f"Dynamic sizing computed 0 contracts "
                     f"(virtual_equity={self.state.sizing_equity}, contract_value={self.contract_value}). "
-                    "Signal logged, no order sent."
+                    "Signal logged, no order sent. Further entries this tick skipped."
                 )
             else:
                 self.logger.warning("RENKO_ICHIMOKU_POSITION_SIZE is 0. Signal logged, no order sent.")
@@ -637,10 +644,10 @@ class RenkoIchimokuRuntime:
                 event="RENKO_NO_SIZE",
                 message=(
                     f"⚠️ RENKO {coin} {action.kind}: 0 contracts "
-                    f"(virtual=${virt:.2f}, mark={brick.close}, cv={self.contract_value}). No order."
+                    f"(virtual=${virt:.2f}, cv={self.contract_value}). No order."
                 ),
-                trade_id=f"renko_{self.instance_id}_{brick.index}_{action.kind}",
-                force=True,
+                trade_id=f"renko_{self.instance_id}_no_size",
+                force=False,
             )
             return True
         if not self.instrument_id:

@@ -495,3 +495,24 @@ def test_separate_account_uses_renko_keys():
     assert engine.renko_adapter is not engine.delta_adapter
     assert engine.renko_adapter.rest_client.api_key == "renko_key"
     assert engine.delta_adapter.rest_client.api_key == "k"
+
+
+def test_strangle_wallet_instance_keys_use_primary_adapter(monkeypatch):
+    monkeypatch.setenv("RENKO_ICHIMOKU_SUI_API_KEY", "k")
+    monkeypatch.setenv("RENKO_ICHIMOKU_SUI_API_SECRET", "s")
+    engine = TradingEngine(
+        settings=_settings(
+            existing_strategy_enabled=False,
+            renko_ichimoku_strategy_enabled=True,
+            renko_ichimoku_alts_group_b_enabled="sui",
+            existing_strategy_account="strangle",
+            renko_ichimoku_account="renko",
+            renko_ichimoku_api_key="renko_key",
+            renko_ichimoku_api_secret="renko_secret",
+        )
+    )
+    by_id = {rt.instance_id: rt for rt in engine.renko_runtimes}
+    assert by_id["eth"].exchange_ops.rest_client.api_key == "renko_key"
+    assert by_id["sui"].exchange_ops.rest_client.api_key == "k"
+    assert by_id["sui"].exchange_ops is engine.delta_adapter
+    assert by_id["eth"].exchange_ops is not engine.delta_adapter

@@ -32,4 +32,5 @@ class RenkoInstanceConfig:
 RENKO_ETH_STRATEGY_CODE = "renko_ichimoku_eth"
 RENKO_SOL_STRATEGY_CODE = "renko_ichimoku_sol"
 RENKO_XRP_STRATEGY_CODE = "renko_ichimoku_xrp"
+RENKO_XRP2_STRATEGY_CODE = "renko_ichimoku_xrp2"
 RENKO_LEGACY_STRATEGY_CODE = "renko_ichimoku"

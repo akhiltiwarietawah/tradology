@@ -191,20 +191,12 @@ class TradingEngine:
         primary_secret = self.settings.active_api_secret
 
         def _credential_group(cfg) -> str:
-            if cfg.api_key and cfg.api_secret:
-                if cfg.api_key == primary_key and cfg.api_secret == primary_secret:
-                    return "primary"
-                if (
-                    default_key
-                    and default_secret
-                    and cfg.api_key == default_key
-                    and cfg.api_secret == default_secret
-                    and not (separate and not use_shared_primary)
-                ):
-                    return "primary"
-                return f"acct:{cfg.api_key[:8]}"
+            key = (cfg.api_key or "").strip()
+            secret = (cfg.api_secret or "").strip()
+            if key and secret:
+                return f"acct:{key[:12]}"
             if separate and not use_shared_primary and default_key:
-                return f"acct:{default_key[:8]}"
+                return f"acct:{(default_key or '')[:12]}"
             return "primary"
 
         grouped: dict[str, list] = defaultdict(list)
@@ -214,32 +206,28 @@ class TradingEngine:
         stacks: dict[str, tuple] = {}
 
         def _build_stack(group_id: str, sample_cfg) -> tuple:
-            if group_id == "primary":
+            key = (sample_cfg.api_key or "").strip()
+            secret = (sample_cfg.api_secret or "").strip()
+            if not key or not secret:
                 if separate and not use_shared_primary and default_key:
-                    adapter = DeltaExchangeAdapter(
-                        rest_url=self.settings.active_rest_url,
-                        ws_url=self.settings.active_ws_url,
-                        api_key=default_key,
-                        api_secret=default_secret,
-                        is_testnet=not is_live,
-                        logger=PrefixLogger(self.logger, "RENKO_ICHIMOKU"),
-                    )
-                    adapter._exchange_name = "delta_india_renko"
-                    if self.renko_adapter is None:
-                        self.renko_adapter = adapter
-                    else:
-                        self._renko_extra_adapters.append(adapter)
+                    key, secret = default_key, default_secret
                 else:
-                    adapter = self.delta_adapter
+                    key, secret = primary_key, primary_secret
+            if key == primary_key and secret == primary_secret:
+                adapter = self.delta_adapter
+                if self.renko_adapter is None:
                     self.renko_adapter = adapter
             else:
                 adapter = DeltaExchangeAdapter(
                     rest_url=self.settings.active_rest_url,
                     ws_url=self.settings.active_ws_url,
-                    api_key=sample_cfg.api_key,
-                    api_secret=sample_cfg.api_secret,
+                    api_key=key,
+                    api_secret=secret,
                     is_testnet=not is_live,
-                    logger=PrefixLogger(self.logger, f"RENKO_ICHIMOKU_{sample_cfg.instance_id.upper()}"),
+                    logger=PrefixLogger(
+                        self.logger,
+                        f"RENKO_ICHIMOKU_{sample_cfg.instance_id.upper()}",
+                    ),
                 )
                 adapter._exchange_name = f"delta_india_renko_{sample_cfg.instance_id}"
                 self._renko_extra_adapters.append(adapter)
@@ -307,10 +295,11 @@ class TradingEngine:
                 if cfg.position_sizing_mode == "dynamic"
                 else f"fixed size={cfg.position_size}"
             )
+            keys_label = "primary" if adapter is self.delta_adapter else "per-instance"
             self.logger.info(
                 f"[RENKO_{cfg.instance_id.upper()}] Configured account={cfg.account_name} "
                 f"symbol={cfg.symbol} box={cfg.box_size} sizing={sizing_desc} "
-                f"state={cfg.state_file} delta_keys={'per-instance' if group_id != 'primary' else 'shared'}"
+                f"state={cfg.state_file} delta_keys={keys_label}"
             )
 
     def _warn_if_renko_disabled_with_open_state(self) -> None:
@@ -1302,9 +1291,10 @@ class TradingEngine:
                 entry_order_id = cfg.get("entry_order_id")
                 exit_order_id = runtime.state.entry_order_id
                 exit_price = None
-                if self.renko_adapter and runtime.instrument_id:
+                fill_adapter = runtime.exchange_ops or self.renko_adapter
+                if fill_adapter and runtime.instrument_id:
                     close_side = "sell" if local_side > 0 else "buy"
-                    fills = await self.renko_adapter.get_recent_fills_for_product(
+                    fills = await fill_adapter.get_recent_fills_for_product(
                         instrument_id=str(runtime.instrument_id),
                         side=close_side,
                         page_size=10,
