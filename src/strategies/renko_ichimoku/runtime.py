@@ -125,10 +125,16 @@ def normalized_local_side(position: int) -> int:
 MANUAL_CLOSE_REASON = "Position manually closed (exchange flat, local state was open)."
 
 
-def deterministic_client_order_id(brick_index: int, action_kind: str, instance_prefix: str = "") -> str:
+def deterministic_client_order_id(action_kind: str, trade_id: str) -> str:
+    """
+    Stable per round-trip id for exchange + DB (max 32 chars).
+
+    Uses trade_id (RENKO_{COIN}_{YYYYMMDD}_{brick}) so a new virtual book / state
+    rebuild cannot reuse the same brick index and collide with old orders.
+    """
     code = ACTION_CODES.get(action_kind, action_kind[:2].upper())
-    prefix = (instance_prefix or "").upper()[:4]
-    return f"RI{prefix}{int(brick_index)}{code}"[:32]
+    body = trade_id[len("RENKO_") :] if trade_id.startswith("RENKO_") else trade_id
+    return f"RI{body}{code}"[:32]
 
 
 POSITION_RECONCILE_INTERVAL_SECONDS = 30.0
@@ -672,7 +678,13 @@ class RenkoIchimokuRuntime:
         if self.kill_switch and reduce_only:
             self.logger.warning("Kill switch set. Reduce-only exit still allowed.")
 
-        cid = deterministic_client_order_id(brick.index, action.kind, self.order_id_prefix)
+        if action.kind in ("exit_long", "exit_short"):
+            trade_ref = self.state.active_trade_id or make_renko_trade_id(
+                brick.index, instance_id=self.instance_id
+            )
+        else:
+            trade_ref = make_renko_trade_id(brick.index, instance_id=self.instance_id)
+        cid = deterministic_client_order_id(action.kind, trade_ref)
         existing = self.order_manager.get_order_by_client_id(cid)
         if existing:
             self.logger.warning(f"Reusing existing local order for cid={cid} state={existing.state.value}")

@@ -154,6 +154,51 @@ def test_renko_instance_configs_eth_sol_and_xrp():
     assert configs[2].position_size == 100
 
 
+def test_xrp3_isolated_book_uses_10usd_and_50x(monkeypatch):
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP3_ENABLED", "true")
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP3_SIZING_BASE_USD", "10")
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP3_LEVERAGE", "50")
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP3_ACCOUNT", "xrp3")
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP3_API_KEY", "third-key")
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP3_API_SECRET", "third-secret")
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP3_SYMBOL", "XRPUSD")
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP3_BOX_SIZE", "0.003")
+    s = _settings(
+        renko_ichimoku_strategy_enabled=True,
+        renko_ichimoku_account="renko",
+        renko_ichimoku_position_sizing_mode="dynamic",
+        renko_ichimoku_sizing_base_usd=200,
+        renko_ichimoku_margin_pct=0.25,
+        renko_ichimoku_leverage=10,
+        renko_ichimoku_profit_retain_pct=0.5,
+    )
+    configs = {c.instance_id: c for c in s.renko_instance_configs()}
+    xrp3 = configs["xrp3"]
+    assert xrp3.strategy_code == "renko_ichimoku_xrp3"
+    assert xrp3.sizing_base_usd == 10.0
+    assert xrp3.leverage == 50.0
+    assert xrp3.margin_pct == 0.25
+    assert xrp3.profit_retain_pct == 0.5
+    assert xrp3.position_sizing_mode == "dynamic"
+    assert xrp3.account_name == "xrp3"
+    assert xrp3.api_key == "third-key"
+    assert xrp3.box_size == 0.003
+    assert configs["eth"].leverage == 10.0
+    assert configs["eth"].sizing_base_usd == 200.0
+
+
+def test_xrp3_without_keys_does_not_share_primary_wallet(monkeypatch):
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP3_ENABLED", "true")
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP3_ACCOUNT", "xrp3")
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP3_API_KEY", "")
+    monkeypatch.setenv("RENKO_ICHIMOKU_XRP3_API_SECRET", "")
+    s = _settings(
+        renko_ichimoku_strategy_enabled=True,
+        renko_ichimoku_account="renko",
+    )
+    assert "xrp3" not in {c.instance_id for c in s.renko_instance_configs()}
+
+
 def test_renko_default_sizing_base_is_50():
     s = _settings(renko_ichimoku_strategy_enabled=True)
     cfg = s.renko_instance_configs()[0]
@@ -215,12 +260,21 @@ def test_engine_starts_eth_sol_and_xrp_runtimes():
     assert engine.renko_runtimes[2].box_size == 0.003
 
 
-def test_deterministic_order_ids_include_instance_prefix():
+def test_deterministic_order_ids_are_unique_per_trade_round_trip():
     from src.strategies.renko_ichimoku.runtime import deterministic_client_order_id
 
-    assert deterministic_client_order_id(159, "enter_long", "SOL") == "RISOL159EL"
-    assert deterministic_client_order_id(159, "enter_long", "ETH") == "RIETH159EL"
-    assert deterministic_client_order_id(159, "enter_long", "XRP") == "RIXRP159EL"
+    assert (
+        deterministic_client_order_id("enter_long", "RENKO_SOL_20261003_159")
+        == "RISOL_20261003_159EL"
+    )
+    assert (
+        deterministic_client_order_id("exit_short", "RENKO_ADA_20261002_206")
+        == "RIADA_20261002_206XS"
+    )
+    assert (
+        deterministic_client_order_id("enter_short", "RENKO_ADA_20260928_213")
+        != deterministic_client_order_id("exit_short", "RENKO_ADA_20261002_206")
+    )
 
 
 def test_engine_wires_independent_managers_when_both_enabled():

@@ -2,6 +2,9 @@
 
 export const RENKO_CORE_SLUGS = ["eth", "sol", "xrp"] as const;
 
+/** Extra isolated books that are not registry alts (own wallet + virtual equity). */
+export const RENKO_EXTRA_BOOK_SLUGS = ["xrp2", "xrp3"] as const;
+
 /** Group A — primary 11 (core 3 + these 8 alts). */
 export const RENKO_GROUP_A_ALT_SLUGS = [
   "btc",
@@ -50,12 +53,14 @@ export const RENKO_ZEC_SLUGS = ["zec"] as const;
 export const RENKO_ALT_SLUGS = RENKO_GROUP_A_ALT_SLUGS;
 
 export type RenkoCoreSlug = (typeof RENKO_CORE_SLUGS)[number];
+export type RenkoExtraBookSlug = (typeof RENKO_EXTRA_BOOK_SLUGS)[number];
 export type RenkoGroupAAltSlug = (typeof RENKO_GROUP_A_ALT_SLUGS)[number];
 export type RenkoGroupBSlug = (typeof RENKO_GROUP_B_SLUGS)[number];
 export type RenkoGroupCSlug = (typeof RENKO_GROUP_C_SLUGS)[number];
 export type RenkoZecSlug = (typeof RENKO_ZEC_SLUGS)[number];
 export type RenkoSlug =
   | RenkoCoreSlug
+  | RenkoExtraBookSlug
   | RenkoGroupAAltSlug
   | RenkoGroupBSlug
   | RenkoGroupCSlug

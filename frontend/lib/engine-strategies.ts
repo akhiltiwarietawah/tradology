@@ -1,5 +1,6 @@
 import {
   RENKO_CORE_SLUGS,
+  RENKO_EXTRA_BOOK_SLUGS,
   RENKO_GROUP_A_ALT_SLUGS,
   RENKO_GROUP_B_SLUGS,
   RENKO_GROUP_C_SLUGS,
@@ -27,6 +28,8 @@ const RENKO_LABELS: Record<RenkoSlug, string> = {
   eth: "ETH",
   sol: "SOL",
   xrp: "XRP",
+  xrp2: "XRP 2",
+  xrp3: "XRP 3",
   btc: "BTC",
   bnb: "BNB",
   doge: "DOGE",
@@ -74,6 +77,7 @@ function renkoDef(slug: RenkoSlug): EngineStrategyDef {
 
 export const ENGINE_STRATEGIES: EngineStrategyDef[] = [
   ...RENKO_CORE_SLUGS.map(renkoDef),
+  ...RENKO_EXTRA_BOOK_SLUGS.map(renkoDef),
   ...RENKO_GROUP_A_ALT_SLUGS.map(renkoDef),
   ...RENKO_GROUP_B_SLUGS.map(renkoDef),
   ...RENKO_GROUP_C_SLUGS.map(renkoDef),

@@ -1217,9 +1217,7 @@ class TradingEngine:
                 synth_brick = type("B", (), {"index": brick_index, "close": st.last_brick_close or st.entry_price})()
                 synth_order = Order(
                     order_id=str(st.entry_order_id or f"backfill-{trade_id}"),
-                    client_order_id=deterministic_client_order_id(
-                        brick_index, action_kind, runtime.order_id_prefix
-                    ),
+                    client_order_id=deterministic_client_order_id(action_kind, trade_id),
                     instrument_id=str(st.instrument_id or runtime.instrument_id),
                     symbol=st.resolved_symbol or runtime.symbol,
                     side=OrderSide.BUY if st.position > 0 else OrderSide.SELL,

@@ -20,11 +20,13 @@ RENKO_ETH_STRATEGY_NAME = "renko_ichimoku_eth"
 RENKO_SOL_STRATEGY_NAME = "renko_ichimoku_sol"
 RENKO_XRP_STRATEGY_NAME = "renko_ichimoku_xrp"
 RENKO_XRP2_STRATEGY_NAME = "renko_ichimoku_xrp2"
+RENKO_XRP3_STRATEGY_NAME = "renko_ichimoku_xrp3"
 RENKO_STRATEGY_CODES = (
     RENKO_ETH_STRATEGY_NAME,
     RENKO_SOL_STRATEGY_NAME,
     RENKO_XRP_STRATEGY_NAME,
     RENKO_XRP2_STRATEGY_NAME,
+    RENKO_XRP3_STRATEGY_NAME,
     RENKO_STRATEGY_NAME,
 )
 RENKO_EXCHANGE = "delta_india_renko"
@@ -406,6 +408,8 @@ class RenkoTradeRepository:
         stmt = stmt.on_conflict_do_update(
             index_elements=[OrderModel.order_id],
             set_={
+                "trade_id": stmt.excluded.trade_id,
+                "trade_leg_id": stmt.excluded.trade_leg_id,
                 "filled_quantity": stmt.excluded.filled_quantity,
                 "average_fill_price": stmt.excluded.average_fill_price,
                 "status": stmt.excluded.status,

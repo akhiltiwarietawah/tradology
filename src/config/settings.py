@@ -1,5 +1,6 @@
 """Configuration & Settings Management supporting Single .env for Testnet and Live."""
 
+import logging
 import os
 from enum import Enum
 from pathlib import Path
@@ -421,7 +422,8 @@ class Settings(BaseSettings):
             self.renko_ichimoku_strategy_enabled
             or self.renko_ichimoku_sol_enabled
             or self.renko_ichimoku_xrp_enabled
-            or os.getenv("RENKO_ICHIMOKU_XRP2_ENABLED", "").strip().lower() in ("1", "true", "yes")
+            or self._env_flag("RENKO_ICHIMOKU_XRP2_ENABLED")
+            or self._env_flag("RENKO_ICHIMOKU_XRP3_ENABLED")
             or merge_enabled_alt_ids(
                 self.renko_ichimoku_alts_enabled,
                 self.renko_ichimoku_alts_group_b_enabled,
@@ -429,6 +431,9 @@ class Settings(BaseSettings):
                 zec_enabled=self.renko_ichimoku_zec_enabled,
             )
         )
+
+    def _env_flag(self, env_key: str) -> bool:
+        return os.getenv(env_key, "").strip().lower() in ("1", "true", "yes")
 
     def _renko_env_float(self, env_key: str, default: float) -> float:
         raw = os.getenv(env_key)
@@ -448,6 +453,40 @@ class Settings(BaseSettings):
             f"RENKO_ICHIMOKU_{prefix}_SIZING_BASE_USD",
             self.renko_ichimoku_sizing_base_usd,
         )
+
+    def _leverage_for_instance(self, instance_id: str) -> float:
+        prefix = instance_id.upper()
+        return self._renko_env_float(
+            f"RENKO_ICHIMOKU_{prefix}_LEVERAGE",
+            self.renko_ichimoku_leverage,
+        )
+
+    def _isolated_extra_book_enabled(self, instance_id: str) -> bool:
+        """
+        Extra books (xrp2, xrp3) start only with their own Delta keys.
+
+        A distinct account label without keys must not fall back onto the primary
+        Renko wallet and double-trade the same symbol there.
+        """
+        prefix = instance_id.upper()
+        if not self._env_flag(f"RENKO_ICHIMOKU_{prefix}_ENABLED"):
+            return False
+        account = self._renko_env_str(
+            f"RENKO_ICHIMOKU_{prefix}_ACCOUNT",
+            self.renko_ichimoku_account,
+        )
+        key = (os.getenv(f"RENKO_ICHIMOKU_{prefix}_API_KEY") or "").strip()
+        secret = (os.getenv(f"RENKO_ICHIMOKU_{prefix}_API_SECRET") or "").strip()
+        dedicated = account.strip().lower() != (self.renko_ichimoku_account or "").strip().lower()
+        if dedicated and (not key or not secret):
+            logging.getLogger("src.config.settings").error(
+                "RENKO_ICHIMOKU_%s_ENABLED is set for account '%s' but API key/secret are empty. "
+                "This book will not start and will not share the primary Renko wallet.",
+                prefix,
+                account,
+            )
+            return False
+        return True
 
     def _renko_credentials_for_instance(self, instance_id: str) -> tuple[str, str, str]:
         """Return (account_label, api_key, api_secret) for one Renko instance."""
@@ -511,6 +550,7 @@ class Settings(BaseSettings):
             RENKO_SOL_STRATEGY_CODE,
             RENKO_XRP_STRATEGY_CODE,
             RENKO_XRP2_STRATEGY_CODE,
+            RENKO_XRP3_STRATEGY_CODE,
             RenkoInstanceConfig,
         )
 
@@ -521,7 +561,7 @@ class Settings(BaseSettings):
                 "position_sizing_mode": sizing_mode,
                 "sizing_base_usd": self._sizing_base_for_instance(instance_id),
                 "margin_pct": self.renko_ichimoku_margin_pct,
-                "leverage": self.renko_ichimoku_leverage,
+                "leverage": self._leverage_for_instance(instance_id),
                 "profit_retain_pct": self.renko_ichimoku_profit_retain_pct,
             }
 
@@ -567,23 +607,30 @@ class Settings(BaseSettings):
                     **sizing_common("xrp"),
                 )
             )
-        xrp2_on = os.getenv("RENKO_ICHIMOKU_XRP2_ENABLED", "").strip().lower() in ("1", "true", "yes")
-        if xrp2_on:
+        for extra_id, extra_code in (
+            ("xrp2", RENKO_XRP2_STRATEGY_CODE),
+            ("xrp3", RENKO_XRP3_STRATEGY_CODE),
+        ):
+            if not self._isolated_extra_book_enabled(extra_id):
+                continue
+            prefix = extra_id.upper()
             configs.append(
                 RenkoInstanceConfig(
-                    instance_id="xrp2",
-                    strategy_code=RENKO_XRP2_STRATEGY_CODE,
-                    symbol=self._renko_env_str("RENKO_ICHIMOKU_XRP2_SYMBOL", self.renko_ichimoku_xrp_symbol),
+                    instance_id=extra_id,
+                    strategy_code=extra_code,
+                    symbol=self._renko_env_str(
+                        f"RENKO_ICHIMOKU_{prefix}_SYMBOL",
+                        self.renko_ichimoku_xrp_symbol,
+                    ),
                     box_size=self._renko_env_float(
-                        "RENKO_ICHIMOKU_XRP2_BOX_SIZE",
+                        f"RENKO_ICHIMOKU_{prefix}_BOX_SIZE",
                         self.renko_ichimoku_xrp_box_size,
                     ),
-                    position_size=self._renko_env_float("RENKO_ICHIMOKU_XRP2_POSITION_SIZE", 0.0),
-                    state_file=self._renko_state_path("xrp2"),
+                    position_size=self._renko_env_float(f"RENKO_ICHIMOKU_{prefix}_POSITION_SIZE", 0.0),
+                    state_file=self._renko_state_path(extra_id),
                     candle_resolution=self.renko_ichimoku_candle_resolution,
-                    flatten=os.getenv("RENKO_ICHIMOKU_XRP2_FLATTEN", "").strip().lower()
-                    in ("1", "true", "yes"),
-                    **sizing_common("xrp2"),
+                    flatten=self._env_flag(f"RENKO_ICHIMOKU_{prefix}_FLATTEN"),
+                    **sizing_common(extra_id),
                 )
             )
         enabled_alts = merge_enabled_alt_ids(

@@ -2,6 +2,7 @@
 
 import {
   RENKO_ALL_ALT_SLUGS,
+  RENKO_EXTRA_BOOK_SLUGS,
   renkoStrategyCode,
 } from "@/lib/renko-assets";
 
@@ -190,7 +191,7 @@ function renkoSubscriptionSchema(strategyCode: string, defaultContracts = 0): St
   };
 }
 
-for (const slug of RENKO_ALL_ALT_SLUGS) {
+for (const slug of [...RENKO_EXTRA_BOOK_SLUGS, ...RENKO_ALL_ALT_SLUGS]) {
   const code = renkoStrategyCode(slug);
   SCHEMAS[code] = renkoSubscriptionSchema(code, 0);
 }
