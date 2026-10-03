@@ -37,11 +37,20 @@ def make_renko_trade_id(
     brick_index: int,
     when: Optional[datetime] = None,
     instance_id: str = "",
+    sequence: int = 0,
 ) -> str:
+    """
+    Unique trade id for DB + client_order_id derivation.
+
+    ``sequence`` comes from a per-coin sidecar counter (survives state-file resets).
+    """
     ts = when or datetime.now(timezone.utc)
     prefix = (instance_id or "").upper()[:4]
     tag = f"RENKO_{prefix}_" if prefix else "RENKO_"
-    return f"{tag}{ts.strftime('%Y%m%d')}_{int(brick_index)}"
+    base = f"{tag}{ts.strftime('%Y%m%d')}_{int(brick_index)}"
+    if sequence and int(sequence) > 0:
+        return f"{base}_{int(sequence)}"
+    return base
 
 
 def _leg_type_for_action(action_kind: str) -> str:

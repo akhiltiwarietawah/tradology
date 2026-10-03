@@ -1127,7 +1127,11 @@ class TradingEngine:
         }
         async with asyncio.timeout(self.settings.db_timeout_seconds):
             if action_kind in ("enter_long", "enter_short"):
-                trade_id = make_renko_trade_id(brick.index, instance_id=rt.instance_id)
+                trade_id = (
+                    rt.state.in_flight_trade_id
+                    or rt.state.active_trade_id
+                    or make_renko_trade_id(brick.index, instance_id=rt.instance_id)
+                )
                 await self.renko_trade_repo.record_entry(
                     trade_id=trade_id,
                     order=order,

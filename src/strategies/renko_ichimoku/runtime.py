@@ -29,7 +29,11 @@ from src.strategies.renko_ichimoku.position_sizing import (
 from src.strategies.renko_ichimoku.prefix_logger import PrefixLogger
 from src.strategies.renko_ichimoku.renko import TraditionalRenko, ConfirmedBrick
 from src.strategies.renko_ichimoku.signals import evaluate_confirmed_brick, SignalAction
-from src.strategies.renko_ichimoku.state import RenkoIchimokuState, RenkoIchimokuStateStore
+from src.strategies.renko_ichimoku.state import (
+    RenkoIchimokuState,
+    RenkoIchimokuStateStore,
+    RenkoTradeSequenceStore,
+)
 from src.persistence.renko_trade_repository import make_renko_trade_id
 
 
@@ -214,6 +218,7 @@ class RenkoIchimokuRuntime:
         self._skip_entries_after_no_size = False
 
         self.store = RenkoIchimokuStateStore(state_file, self.logger)
+        self.trade_seq_store = RenkoTradeSequenceStore(state_file, self.logger)
         self.state = self.store.load()
         self.state.account = account_name
         self.state.symbol = symbol
@@ -237,6 +242,10 @@ class RenkoIchimokuRuntime:
         if self.is_dynamic_sizing and self.state.open_quantity is not None:
             return float(self.state.open_quantity)
         return float(self.position_size)
+
+    def _allocate_trade_id(self, brick_index: int) -> str:
+        seq = self.trade_seq_store.allocate()
+        return make_renko_trade_id(brick_index, instance_id=self.instance_id, sequence=seq)
 
     async def _fetch_available_balance_usd(self) -> float:
         """Live USD available balance from the Renko exchange account."""
@@ -683,7 +692,8 @@ class RenkoIchimokuRuntime:
                 brick.index, instance_id=self.instance_id
             )
         else:
-            trade_ref = make_renko_trade_id(brick.index, instance_id=self.instance_id)
+            trade_ref = self._allocate_trade_id(brick.index)
+            self.state.in_flight_trade_id = trade_ref
         cid = deterministic_client_order_id(action.kind, trade_ref)
         existing = self.order_manager.get_order_by_client_id(cid)
         if existing:
@@ -857,14 +867,18 @@ class RenkoIchimokuRuntime:
             self.state.position = 1
             self.state.entry_price = fill_px
             self.state.entry_order_id = order.order_id
-            self.state.active_trade_id = make_renko_trade_id(brick.index, instance_id=self.instance_id)
+            self.state.active_trade_id = self.state.in_flight_trade_id or make_renko_trade_id(
+                brick.index, instance_id=self.instance_id
+            )
             self.state.entry_time = self.now_fn()
             self.state.open_quantity = filled_qty
         elif action_kind == "enter_short":
             self.state.position = -1
             self.state.entry_price = fill_px
             self.state.entry_order_id = order.order_id
-            self.state.active_trade_id = make_renko_trade_id(brick.index, instance_id=self.instance_id)
+            self.state.active_trade_id = self.state.in_flight_trade_id or make_renko_trade_id(
+                brick.index, instance_id=self.instance_id
+            )
             self.state.entry_time = self.now_fn()
             self.state.open_quantity = filled_qty
         self.logger.info(
@@ -896,6 +910,7 @@ class RenkoIchimokuRuntime:
         self.state.in_flight_client_order_id = None
         self.state.in_flight_action = None
         self.state.in_flight_brick_index = None
+        self.state.in_flight_trade_id = None
 
     async def _recover_in_flight_order(self) -> None:
         cid = self.state.in_flight_client_order_id

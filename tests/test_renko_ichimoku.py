@@ -264,17 +264,38 @@ def test_deterministic_order_ids_are_unique_per_trade_round_trip():
     from src.strategies.renko_ichimoku.runtime import deterministic_client_order_id
 
     assert (
-        deterministic_client_order_id("enter_long", "RENKO_SOL_20261003_159")
-        == "RISOL_20261003_159EL"
+        deterministic_client_order_id("enter_long", "RENKO_SOL_20261003_159_3")
+        == "RISOL_20261003_159_3EL"
     )
     assert (
-        deterministic_client_order_id("exit_short", "RENKO_ADA_20261002_206")
-        == "RIADA_20261002_206XS"
+        deterministic_client_order_id("exit_short", "RENKO_ADA_20261002_206_7")
+        == "RIADA_20261002_206_7XS"
     )
     assert (
-        deterministic_client_order_id("enter_short", "RENKO_ADA_20260928_213")
-        != deterministic_client_order_id("exit_short", "RENKO_ADA_20261002_206")
+        deterministic_client_order_id("enter_short", "RENKO_ADA_20261003_206_1")
+        != deterministic_client_order_id("enter_short", "RENKO_ADA_20261003_206_2")
     )
+
+
+def test_trade_sequence_survives_state_reset(tmp_path):
+    import logging
+
+    from src.persistence.renko_trade_repository import make_renko_trade_id
+    from src.strategies.renko_ichimoku.state import RenkoTradeSequenceStore
+
+    state_file = tmp_path / "renko_ichimoku_ada_state_live.json"
+    log = logging.getLogger("test")
+    seq_store = RenkoTradeSequenceStore(str(state_file), log)
+    a = seq_store.allocate()
+    b = seq_store.allocate()
+    assert a == 1 and b == 2
+    seq_store2 = RenkoTradeSequenceStore(str(state_file), log)
+    c = seq_store2.allocate()
+    assert c == 3
+    t1 = make_renko_trade_id(206, instance_id="ada", sequence=1)
+    t2 = make_renko_trade_id(206, instance_id="ada", sequence=2)
+    assert t1 != t2
+    assert t1.endswith("_1") and t2.endswith("_2")
 
 
 def test_engine_wires_independent_managers_when_both_enabled():

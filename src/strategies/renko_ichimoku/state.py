@@ -30,12 +30,61 @@ class RenkoIchimokuState:
     in_flight_client_order_id: Optional[str] = None
     in_flight_action: Optional[str] = None
     in_flight_brick_index: Optional[int] = None
+    in_flight_trade_id: Optional[str] = None
     orders_halted: bool = False
     halt_reason: Optional[str] = None
     # Dynamic sizing: virtual equity for 25% margin (simulates partial withdraw on wins).
     sizing_equity: Optional[float] = None
     open_quantity: Optional[float] = None
     last_realized_pnl: Optional[float] = None
+
+
+def trade_sequence_path_for_state(state_file: str) -> Path:
+    """Sidecar counter file; kept when the main Renko state file is deleted/reset."""
+    p = Path(state_file)
+    name = p.name.replace("_state_", "_trade_seq_", 1)
+    if name == p.name:
+        name = f"{p.stem}_trade_seq{p.suffix}"
+    return p.with_name(name)
+
+
+class RenkoTradeSequenceStore:
+    """Monotonic per-coin trade counter (persists across same-day state resets)."""
+
+    def __init__(self, state_file: str, logger: logging.Logger):
+        self.file_path = trade_sequence_path_for_state(state_file)
+        self.logger = logger
+        self.file_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _read(self) -> int:
+        if not self.file_path.exists():
+            return 0
+        try:
+            with open(self.file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return max(0, int(data.get("next_trade_seq") or 0))
+        except Exception as e:
+            self.logger.warning(
+                f"Could not read trade sequence at {self.file_path}: {e}. Starting from 0."
+            )
+            return 0
+
+    def allocate(self) -> int:
+        """Return the next sequence number (1-based) and persist it."""
+        current = self._read()
+        nxt = current + 1
+        payload = {"next_trade_seq": nxt}
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w", dir=self.file_path.parent, delete=False, encoding="utf-8"
+            ) as tf:
+                json.dump(payload, tf, indent=2)
+                temp_name = tf.name
+            os.replace(temp_name, self.file_path)
+        except Exception as e:
+            self.logger.error(f"Failed to persist trade sequence: {e}", exc_info=True)
+            raise
+        return nxt
 
 
 class RenkoIchimokuStateStore:
@@ -69,6 +118,7 @@ class RenkoIchimokuStateStore:
                 in_flight_client_order_id=data.get("in_flight_client_order_id"),
                 in_flight_action=data.get("in_flight_action"),
                 in_flight_brick_index=data.get("in_flight_brick_index"),
+                in_flight_trade_id=data.get("in_flight_trade_id"),
                 orders_halted=bool(data.get("orders_halted")),
                 halt_reason=data.get("halt_reason"),
                 sizing_equity=data.get("sizing_equity"),
