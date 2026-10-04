@@ -101,7 +101,7 @@ class StrategyRuntimeManager:
         )
 
     def _uses_integrated_runtime(self, ctx: RuntimeContext) -> bool:
-        return ctx.strategy_code == "short_strangle" and ctx.exchange == "delta_india"
+        return ctx.strategy_code in ("short_strangle", "btc_1dte_strangle") and ctx.exchange == "delta_india"
 
     def _audit_callback(self, ctx: RuntimeContext):
         async def _record(event_type: str, payload: Dict[str, Any]) -> None:

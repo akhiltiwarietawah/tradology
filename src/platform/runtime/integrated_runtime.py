@@ -16,6 +16,7 @@ from src.platform.execution.models import OrderIntent
 from src.platform.execution.pipeline import OrderExecutionPipeline
 from src.platform.execution.reconciliation import OrderReconciliationService, PositionReconciliationService
 from src.platform.execution.validation_stats import ValidationStatsRepository
+from src.platform.runtime.adapters.btc_1dte_strangle_adapter import Btc1DteStrangleRuntimeAdapter
 from src.platform.runtime.adapters.short_strangle_adapter import ShortStrangleRuntimeAdapter
 from src.platform.runtime.models import RuntimeContext, RuntimeStatus
 from src.platform.runtime.repository import RuntimeRepository
@@ -30,6 +31,7 @@ class IntegratedStrategyRuntime(StrategyRuntime):
 
     ADAPTER_FACTORY = {
         "short_strangle": ShortStrangleRuntimeAdapter,
+        "btc_1dte_strangle": Btc1DteStrangleRuntimeAdapter,
     }
 
     def __init__(
